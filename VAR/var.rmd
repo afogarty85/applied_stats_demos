@@ -1,0 +1,487 @@
+---
+title: "Time Series Analysis"
+author: "Andrew Fogarty"
+date: "8/17/2019"
+output: 
+     rmarkdown::html_vignette:
+          toc: TRUE
+          number_sections: TRUE
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r, message = FALSE}
+# load necessary packages
+library(dplyr)
+library(plotly)
+library(urca)
+library(vars)
+library(tseries)
+set.seed(123)
+```
+
+
+# Introduction
+
+In this analysis, we replicate portions of an article by Kwon (2015): Does Radical Partisan Politics Affect National Income Distributions? Congressional Polarization and Income Inequality in the United States, 1913–2008. In his research, Kwon investigates the determinants of political polarization and its impact on income inequality. Kwon's research is interesting because it offers multiple long-run time series variables and theorized explanations for us to investigate.
+
+
+# Data
+
+
+```{r}
+# load data
+df <- read.csv('https://raw.githubusercontent.com/afogarty85/replications/master/Kwon/kwon.csv')
+```
+
+We can see that we have a case-year time series dataset, with only a few `NA`s, ranging the years from 1913-2008. 
+
+```{r}
+summary(df)
+```
+
+The `NA` values are from 1913-1916 and since there is little we can do about that, we will remove them.
+
+```{r}
+df <- na.omit(df)
+```
+
+In his article, Kwon notes that political polarization and income equality are reaching new highs in the United States. To make his case, he produces two graphs: one showing changes in political polarization over time and one showing changes in income equality over time. We replicate his line graphs as follows:
+
+
+```{r}
+# polarization
+p1 <- plot_ly(data = df, type = 'scatter', mode = 'lines') %>%
+  add_trace(x =~year, y=~housepolar, name = 'House Polarization') %>%
+  add_trace(x =~year, y=~senatepolar, name = 'Senate Polarization')
+```
+
+```{r}
+# inequality
+p2 <- plot_ly(data = df, type = 'scatter', mode = 'lines') %>%
+  add_trace(x =~year, y=~toponepercent, name = 'Top 1%') %>%
+  add_trace(x =~year, y=~toppointonepercent, name = 'Top 0.1%')
+```
+
+```{r, warning = FALSE, fig.height=6, fig.width=7}
+subplot(p1, p2) %>% 
+  layout(title = 'Congressional Polarization and Income Shares of Top Earners in the U.S., 1913-2008',
+         font = list(size = 10))
+```
+
+# Understanding Autocorrelation
+
+When we have time series variables, the general way to think about our data's time dependence is in terms of autocorrelation. A time series is autocorrelated if it is correlated with its own lags. This means that the value of the series a specified time point depends on its value during the last time point.
+
+By graphing our time series variables, we can visually inspect, but not definitively prove, whether or not our data is autocorrelated. We can think about two broad terms when considering autocorrelation: *stationary* and *non-stationary*. 
+
+* Stationary: the time series tends to return to the same long-term mean. 
+
+* Non-stationary: the time series has no long term mean and shocks are everlasting. Other terms include: unit-root, random walk, integrated, and infinite memory.
+
+AR, MA, and ARMA are all (stationary) processes in which shocks are eventually forgotten and the system returns to normal.
+
+* AR - Long-term memory: How long after a shock does it take for the system to return to its mean?
+
+* MA - Short-term memory: How long does a shock last?
+
+* ARMA - Autoregressive and Moving Average. ARMA models memory. Memory is the speed with which the time series forgets the shock and returns to its mean.
+
+## Understanding Autocorrelation: Autoregressive AR(p) processes
+
+All four series seem to follow a pattern whereby they reach peaks before 1930 and after 1990 and where they are lower between these years. Lending credence to our suspicion, Kwon notes in a footnote that his Dickey-Fuller tests found that all variables were non-stationary when analyzed. 
+
+Before following Kwon's lead, let's first examine our time series data and see if can find a AR(p) process ongoing within the data where $p$ = the number of lagged dependent variables we include. The model for this process is the following: $y_{t} = \text{c} + \delta{y_{t-1}} + \epsilon_{t}$. $\delta$ here is our measure for memory such that:
+
+* If $\delta$ $\epsilon$ (0,1): the series is stationary and lags are less influential as they become more distant from each other
+
+* If $\delta$ = 1: the series is integrated and all lags have equal influence no matter how distant they become
+
+* If $\delta$ > 1: the series is explosive and old lags are more influential as they become more distant
+
+## Understanding Autocorrelation: Moving average MA(q) processes
+
+We can also examine our time series data for moving average processes which means that $Y_{t}$ is a rolling average of the last $q$ shocks. The MA(q) process determines the number of lagged error terms we include. The model for this process is the following: 
+
+$$\begin{equation}
+y_{t} = c + \epsilon_{t},\\
+\epsilon_{t} = \gamma{\epsilon_{t-1}} + v_{t}
+\end{equation}$$
+
+* $c$ is the mean of $Y$
+
+* $\gamma$ is the estimated continued influence of old shocks
+
+* $v_{t}$ is white noise
+
+## Combining ARMA
+
+Given data where AR and MA processes both exist, we combine our two components above to produce the ARMA model as follows:
+
+$$\begin{equation}
+y_{t} = c + \delta{y_{t-1}} + \epsilon_{t},\\
+\epsilon_{t} = \gamma{\epsilon_{t-1}} + v_{t}
+\end{equation}$$
+
+
+
+# Autocorrelation Analysis - Dependent Variable Lags
+
+Now that we have a few of the details out of the way, what we are trying to do here is to find the correct ARMA model that fits our dependent variable $Y_{t}$, such that it removes the time trends so we can see the true relationships between our variables. A good ARMA model produces errors that are white noise, meaning $Y$ has a mean $c$ and any departures from it appear random.
+
+To choose the right number of lags on the dependent variable, we do a bit of guess-and-checking. Again, we are tabling the fact that we probably do not have stationary time series here, but the purpose is worthwhile as we will see.
+
+We begin by plotting one of our time series variable's autocorrelation function `acf`. The `acf` shows the autocorrelation of $Y_{t}$ and some lag $Y_{t-p}$. AR processes show persistent autocorrelation between lags but the autocorrelation decays exponentially.
+
+## Autocorrelation Analysis - Dependent Variable: housepolar
+
+```{r, fig.height=6, fig.width=7}
+acf(df$housepolar)
+```
+The `pacf` shows the remaining partial autocorrelation after controlling for all closer lags. For an AR(1) process, (one lagged dependent variable), only the first partial autocorrelation should be different from 0.
+
+```{r, fig.height=6, fig.width=7}
+pacf(df$housepolar)
+```
+
+What we see here visually follows the autocorrelation expectation for AR(p) processes as shown in the table below:
+
+| Lags | AC | PACF |
+|------|----|------|
+| 1   | Exponential Decay | 1 significant     |
+| 2    | Slower exponential Decay    | 2 significant     |
+| 3    | Even slower exponential Decay   | 3 significant     |
+
+
+For comparative purposes, the expectation for MA(q) processes is the opposite, as seen from the table below:
+
+| Lags | AC | PACF |
+|------|----|------|
+| 1   | 1 significant | Exponential decay     |
+| 2    | 2 significant    | Exponential decay     |
+| 3    | 3 significant   | Exponential decay     |
+
+
+The `acf` for `housepolar` shows exponential decay while the `pacf` for `housepolar` shows one significant value suggesting a AR(1) process.
+
+With the details out of the way, we can proceed with examining the other time series dependent variables quickly.
+
+## Autocorrelation Analysis - Dependent Variable: senatepolar
+
+```{r, fig.height=6, fig.width=7}
+acf(df$senatepolar)
+```
+```{r, fig.height=6, fig.width=7}
+pacf(df$senatepolar)
+```
+The `acf` for `senatepolar` shows exponential decay while the `pacf` for `senatepolar` shows one significant value suggesting a AR(1) process.
+
+
+## Autocorrelation Analysis - Dependent Variable: toponepercent
+
+```{r, fig.height=6, fig.width=7}
+acf(df$toponepercent)
+```
+```{r, fig.height=6, fig.width=7}
+pacf(df$toponepercent)
+```
+The `acf` for `toponepercent` shows exponential decay while the `pacf` for `toponepercent` shows one significant value suggesting a AR(1) process.
+
+
+## Autocorrelation Analysis - Dependent Variable: toppointonepercent
+
+```{r, fig.height=6, fig.width=7}
+acf(df$toppointonepercent)
+```
+```{r, fig.height=6, fig.width=7}
+pacf(df$toppointonepercent)
+```
+The `acf` for `toppointonepercent` shows exponential decay while the `pacf` for `toppointonepercent` shows one significant value suggesting a AR(1) process.
+
+
+
+## Autocorrelation Analysis - Integration
+
+Looping back to where we were a bit earlier, we know from reading Kwon's article that his time series variables are non-stationary, meaning we cannot directly use ARMA, VAR, or granger tests. We cannot use ARMA because the variable never forgets any shock and thus cannot return to its true mean. We cannot use VAR and granger because we cannot separate the effect of X on Y or Y on X from what both variables would do absent the shock.
+
+The general approach then is once realizing we have non-stationary time series, we typically take the first (or perhaps more) difference of the non-stationary (integrated) variable. Let's test for integration.
+
+The `ur.df` command from `urca` tests for integration. Our function includes a trend and drift term, allows for up to 5 lags, and lets AIC select the best number of lags.
+
+```{r}
+summary(ur.df(df$housepolar, type="trend", lags=5, selectlags="AIC"))
+```
+
+The test-statistic is -3.20 while the 5% critical value is -3.45. Since our test-statistic is not less than then critical value, we cannot reject the presence of a unit root.
+
+```{r}
+-3.20 < -3.45
+```
+
+```{r}
+summary(ur.df(df$senatepolar, type="trend", lags=5, selectlags="AIC"))
+```
+
+The test-statistic is -3.70 while the 5% critical value is -3.45. Since our test-statistic is not less than then critical value, we cannot reject the presence of a unit root.
+
+```{r}
+3.7031 < -3.45
+```
+
+
+```{r}
+summary(ur.df(df$toponepercent, type="trend", lags=5, selectlags="AIC"))
+```
+
+The test-statistic is -0.6914 while the 5% critical value is -3.45. Since our test-statistic is not less than then critical value, we cannot reject the presence of a unit root.
+
+
+```{r}
+-0.6914 < -3.45
+```
+
+```{r}
+summary(ur.df(df$toppointonepercent, type="trend", lags=5, selectlags="AIC"))
+```
+
+The test-statistic is -0.6914 while the 5% critical value is -3.45. Since our test-statistic is not less than then critical value, we cannot reject the presence of a unit root.
+
+
+```{r}
+-0.695 < -3.45
+```
+
+
+## Autocorrelation Analysis - Remove Integration
+
+Kwon notes in his article that in order to remove integration, he takes the first difference, but also transforms his variables by the natural log. Here, we follow his lead and check whether or not a unit root still exists.
+
+```{r}
+# transform variables
+df_transformed <- data.frame(year = df$year[-1], 
+                             housepolar = diff(log(df$housepolar)),
+                             senatepolar=diff(log(df$senatepolar)),
+                             toponepercent=diff(log(df$toponepercent)),
+                             toppointonepercent=diff(log(df$toppointonepercent)))
+```
+
+```{r}
+summary(ur.df(df_transformed$housepolar, type="trend", lags=5, selectlags="AIC"))
+```
+
+The test-statistic is -2.87 while the 5% critical value is -3.45. Since our test-statistic is not less than then critical value, we *still* cannot reject the presence of a unit root.
+
+```{r}
+-2.8764 < -3.45
+```
+
+
+```{r}
+summary(ur.df(df_transformed$senatepolar, type="trend", lags=5, selectlags="AIC"))
+```
+
+The test-statistic is -2.85 while the 5% critical value is -3.45. Since our test-statistic is not less than then critical value, we *still* cannot reject the presence of a unit root.
+
+```{r}
+-2.8557 < -3.45
+```
+
+
+```{r}
+summary(ur.df(df_transformed$toponepercent, type="trend", lags=5, selectlags="AIC"))
+```
+
+The test-statistic is -6.27 while the 5% critical value is -3.45. Since our test-statistic *is* less than then critical value, we *can* reject the presence of a unit root.
+
+```{r}
+-6.2741 < -3.45
+```
+
+```{r}
+summary(ur.df(df_transformed$toppointonepercent, type="trend", lags=5, selectlags="AIC"))
+```
+
+The test-statistic is -6.19 while the 5% critical value is -3.45. Since our test-statistic *is* less than then critical value, we *can* reject the presence of a unit root.
+
+```{r}
+-6.1949 < -3.45
+```
+
+
+# Analysis - Vector Autoregression (VAR)
+
+VAR is a model of cross-correlations which are correlations of one variable with the lags of another. A VAR shows us first whether an effect from one variable to the other exists, then how this effect is processed by the variable over time before it returns to its long-term mean. 
+
+We can view cross-correlations by using the `ccf` function.  While not definitive, it is exploratory in the sense that we can view patterns in correlations. If there was no pattern, we could probably exclude any possibility of temporal dependence between two variables. The graph below suggests a temporal relationship exists between congressional house polarization and the income share of the top one percent.
+
+```{r, fig.height=6, fig.width=7}
+ccf(df$toponepercent, df$housepolar)
+```
+
+Granger models ask whether or not the recent history of $X$ effects the current value of $Y$ beyond what is expected from the recent history of $Y$. Its null hypothesis is that none of the lags of $X$ have an effect on current $Y$. If:
+
+* the Granger test for $X$ $\rightarrow$ $Y$ is significant, and
+
+* the Granger test for $Y$ $\rightarrow$ $X$ is not,
+
+Then we can say that $X$ Granger-causes $Y$. However, we must remember that we might still be omitted variable bias, that our ARMA model is wrong, or we have a extraordinary sample.
+
+A VAR is an extension of Granger causality because it allows us to incorporate many time series variables to better address causality and address omitted variable bias.
+
+VARs offer a nice time series analogue to marginal change which his an impulse response function (IRF). An IRF states:
+
+* A one-unit increase in $X$ at time $t$ is associated with a $\phi$ change in $Y$ at time $t$ + $k$.
+
+
+
+Kwon then incorporates four VARs to analyze the association between the independent variable's past values and the dependent variable. Before replicating his models, we will first use `VARselect` to help determine the amount of lags we should include in our model. We begin by selecting two of the variables used in the models and then conclude by running `VARselect`.
+
+
+```{r}
+df1 <- dplyr::select(df, housepolar, toponepercent)
+VARselect(df1) # 5 lags
+```
+
+Using `VARselect`, the function suggests we use 5 lags.
+
+```{r}
+df2 <- dplyr::select(df, housepolar, toppointonepercent)
+VARselect(df2) # 6 lags
+```
+Using `VARselect`, the function suggests we use 6 lags.
+
+```{r}
+df3 <- dplyr::select(df, senatepolar, toppointonepercent)
+VARselect(df3) # 3 lags
+```
+Using `VARselect`, the function suggests we use 3 lags.
+
+
+```{r}
+df4 <- dplyr::select(df, senatepolar, toppointonepercent)
+VARselect(df4) # 3 lags
+```
+Using `VARselect`, the function suggests we use 3 lags.
+
+# Analysis - Vector Autoregression Models
+
+Taking the AIC recommendations, we fit our first VAR like so:
+
+```{r}
+var1 <- VAR(df1, type="const", p=5)
+summary(var1)
+```
+
+While we could comb through the results to inspect the sign and significance of our variables, what we really want from `VAR` is our ability to: (1) run Granger causality tests, and (2) run impulse response functions.
+
+Since Kwon began his article questioning the direction of causality between income inequality and political polarization, we can examine that relationship closer with Granger-causality tests. Kwon notes that in the literature, the assumed argument is: Income Inequality $\rightarrow$ Political Polarization. Let's find out from the data:
+
+Political Polarization $\rightarrow$ Income Inequality
+
+```{r}
+causality(var1, cause="housepolar")
+```
+
+I can reject the null that house polarization does not Granger-cause the income shares of the top 1% of earners in the United States from 1913-2008. We make this judgement by looking at `$Granger` and noticing that the p-value is less than our traditional critical value of 5%.
+
+
+Income Inequality $\rightarrow$ Political Polarization
+
+```{r}
+causality(var1, cause="toponepercent")
+```
+
+I cannot reject the null that the income shares of the top 1% of earners does not Granger-cause house polarization. We make this judgement by looking at `$Granger` and noticing that the p-value is *greater* than our traditional critical value of 5%. Thus, `housepolar` Granger-causes `toponepercent` which means that the assumption that Income Inequality $\rightarrow$ Political Polarization should be revisited.
+
+# Analysis - Impulse Response Function
+
+```{r}
+irf1 <- irf(var1, 
+            n.ahead=30, # time of time periods (leads) ahead
+            impulse="housepolar", # cause
+            response="toponepercent", # effect
+            boot = TRUE, # bootstrap
+            runs = 1000) # number of runs
+
+irf2 <- irf(var1, 
+            n.ahead=30, 
+            impulse="toponepercent", 
+            response="housepolar",
+            boot = TRUE,
+            runs = 1000)
+```
+
+```{r}
+# prepare data for graphing
+x_sequence <- seq(from=0, to=30) # create x-axis
+
+irf_df1 <- data.frame(x1 = x_sequence, 
+                      x2 = irf1$irf,
+                      x3 = irf1$Lower,
+                      x4 = irf1$Upper)
+
+# rename columns since pulling from irf the is problematic for names
+colnames(irf_df1) <- c('x', 
+                       'irf', 
+                       'irf_low', 
+                       'irf_high') 
+
+
+irf_df2 <- data.frame(x1 = x_sequence, 
+                      x2 = irf2$irf,
+                      x3 = irf2$Lower,
+                      x4 = irf2$Upper)
+
+colnames(irf_df2) <- c('x', 
+                       'irf', 
+                       'irf_low', 
+                       'irf_high')
+```
+
+
+```{r, fig.height=6, fig.width=7}
+x <- list(title = "Year's Ahead", zeroline = FALSE)
+y <- list(title = "Marginal Change in Y at time t")
+
+plot_ly(data = irf_df1, type = 'scatter', mode = 'lines') %>%
+  add_trace(x =~x, y =~irf_high, line = list(color = 'transparent'), 
+            name = 'Upper CI', showlegend = FALSE) %>%
+  add_trace(x =~x, y =~irf_low, fill = 'tonexty', fillcolor='rgba(0,100,80,0.2)', 
+            line = list(color = 'transparent'), name = 'Lower CI', showlegend = FALSE) %>%
+  add_trace(x =~x, y =~irf, line = list(color='rgb(0,100,80)'),
+            name = 'Effect') %>%
+  layout(xaxis = x,
+         yaxis = y)
+```
+
+We interpret our results in the following way: a one-unit increase in house polarization this year is associated with a 1.1 percentage point increase on average in the share of national income controlled by the top 1% of incomes in the United States 25 years later. It takes about 9 years for the effect to be manifestly different from 0. The total effect lasts for at least 30 years.
+
+```{r, fig.height=6, fig.width=7}
+x <- list(title = "Year's Ahead", zeroline = FALSE)
+y <- list(title = "Marginal Change in Y at time t")
+
+plot_ly(data = irf_df2, type = 'scatter', mode = 'lines') %>%
+  add_trace(x =~x, y =~irf_high, line = list(color = 'transparent'), 
+            name = 'Upper CI', showlegend = FALSE) %>%
+  add_trace(x =~x, y =~irf_low, fill = 'tonexty', fillcolor='rgba(0,100,80,0.2)', 
+            line = list(color = 'transparent'), name = 'Lower CI', showlegend = FALSE) %>%
+  add_trace(x =~x, y =~irf, line = list(color='rgb(0,100,80)'),
+            name = 'Effect') %>%
+  layout(xaxis = x,
+         yaxis = y)
+```
+
+In contrast, a 1 percentage point increase in the income share of the top 1% this year does not result in any significant change in house polarization at any point in time.
+
+
+
+
+
+
+
+
+
+# Sources
+
+* Kwon, Roy. "Does radical partisan politics affect national income distributions? Congressional polarization and income inequality in the United States, 1913–2008." Social Science Quarterly 96, no. 1 (2015): 49-64.

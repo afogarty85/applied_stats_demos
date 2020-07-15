@@ -1,0 +1,352 @@
+---
+title: "Ordered Categorical Models"
+author: "Andrew Fogarty"
+date: "8/22/2019"
+output: 
+     rmarkdown::html_vignette:
+          toc: TRUE
+          number_sections: TRUE
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r, message = FALSE}
+# load necessary packages
+library(dplyr)
+library(plotly)
+library(stargazer)
+library(knitr)
+library(MASS)
+library(arm)
+library(nnet)
+set.seed(123)
+```
+
+# Introduction
+
+In this analysis, we will use survey data collected from British voters. They survey was conducted in 2010 which asked respondents about their vote intention. The Labour party was led by Prime Minister Gordon Brown. The Liberal Democrats, a centrist party on the economic left-right dimension, was led by Nick Clegg. The conservative party, led by David Cameron, ended up winning the largest number of votes and seats in the 2010 general election. The outcome variable is represents voter opinion on whether or not the MPs caught in the expenses scandal should resign.
+
+
+# Data
+
+```{r}
+df <- read.table('https://raw.githubusercontent.com/afogarty85/replications/master/Expenses%20Scandal/ps206data3.txt',
+                 header = TRUE)
+```
+
+## Data: Variable Descriptions
+
+While the codebook for this survey is unavailable, we list several of the variables used in this analysis and their meaning.
+
+* `MP_resign` - Should MPs who were caught in the expenses scandal resign; (Yes, Maybe, No)
+
+* `app_Brown` - PM Gordon Brown's Approval; higher = greater approval
+
+* `age` - Respondent's age
+
+* `income` - Respondent's income
+
+* `gender` - Respondent's gender
+
+## Data: Summary
+
+We begin by inspecting the survey data, noting that the dataset contains no missing values and is complete.
+
+```{r}
+summary(df)
+```
+
+Because we have an ordered categorical dependent variable, we need to set its order in an intuitive manner.
+
+```{r}
+df <- df %>% mutate(MP_resign = dplyr::recode(MP_resign, 
+                         `1`="Yes",
+                         `2`="Maybe",
+                         `3`="No"))
+
+levels(df$MP_resign) # outcome variable is not ordered!
+df$MP_resign <- factor(df$MP_resign, levels=c("No", "Maybe", "Yes")) # set factor order
+```
+
+## Data: Dependent Variable
+
+We can see that we have a categorical dependent variable that we are treating as ordered such that: No < Maybe < Yes. The barplot below shows that most respondent's expect the MPs who engaged in the expenses scandal to resign.
+
+```{r, warning = FALSE, fig.height=6, fig.width=7}
+dv_count <- df %>% group_by(MP_resign) %>% tally()
+
+plot_ly(data = dv_count, type = 'bar') %>% 
+  add_trace(x = ~MP_resign, y=~n, name = 'Should MPs Resign?')
+```
+
+
+## Data: Independent Variable
+
+Our primary independent variable in this analysis is `app_Brown`, or PM Gordon Brown's approval. The histogram below shows the broad distribution of survey respondents and how they view PM Gordon Brown's performance. We can see that while a fair amount of respondents disapprove of PM Brown, voters vary considerably in their perceptions of the PM's performance.
+
+```{r, warning = FALSE, fig.height=6, fig.width=7}
+plot_ly(data = df, type = 'histogram') %>% 
+  add_trace(x = ~app_Brown,  name = 'PM Brown Approval',
+            marker = list(color = 'rgb(49,130,189)'), nbinsx = 20)
+```
+
+
+# Analysis
+
+We begin by fitting our ordered logit model. It is important to note the use of `as.ordered` in our model, to ensure that `R` treats the factor accordingly. It is almost important to note that we need to set `Hess` to `TRUE` when we use `polr` to ensure the model fits. Our estimated model can be written as the following:
+
+$$\begin{equation}
+P(Y \leq j) = logit^{-1}(\beta_{j0} - (\beta_{1}\text{PM Approval} + \beta_{2}\text{Age} + \beta_{3}\text{Income} + \beta_{4}\text{Gender}))
+\end{equation}$$
+
+```{r}
+# Estimate Ordered Logit
+ologit <- polr(as.ordered(MP_resign) ~ app_Brown + 
+                 age + income + factor(gender), 
+               method="logistic", 
+               data = df, 
+               Hess = TRUE)
+```
+
+We print our coefficients here largely to inspect the sign and significance of the results. We can broadly interpret some results as follows:
+
+* Increases in voter's approval for PM Brown decreases the probability that voters will demand MPs caught in the expense scandal should resign.
+
+* As voters get older, they are more likely to demand that MPs caught in the expense scandal should resign.
+
+* Females, as compared to males, are less likely to demand that MPs caught in the expense scandal should resign.
+
+```{r, results = 'asis'}
+stargazer(ologit,
+          type = "html",
+          title = "Politician Approval and Voter Preferences Over Resignation",
+          dep.var.labels = "Should MPs Resign?",
+          covariate.labels = c("PM Brown's Approval", "Age", "Income", 
+                               "Female"),
+          ci = TRUE)
+```
+
+
+## Analysis: Simulations
+
+To generate the type of data we really want, we run simulations to generate predicted probabilities and to generate confidence intervals. We begin by using the `sim` function to generate `10000` coefficients taken from our `ologit` model. Then we sequence out our primary independent variable `app_Brown`, so we can compare predicted probabilities to its value. Then, we create a model which holds all other excoriates at its mean or mode, while allowing the primary independent variable to vary. Finally, we matrix multiply our model by the simulated coefficients, excluding the outpoints generated by our model.
+
+
+```{r}
+sim.uk <- coef(sim(ologit, n = 10000)) #simulate coefficients
+head(sim.uk)
+
+app_brown_sq <- seq(min(df$app_Brown), # sequence primary IV by actual values
+                    max(df$app_Brown), by = 1)
+
+df_mean <- cbind(app_Brown = app_brown_sq, # vary IV
+                 age = mean(df$age), # hold age at mean
+                 income = mean(df$income), # hold income at mean
+                 gender = 0) # gender set to mode
+
+pred <- df_mean %*% # matrix multiply model that holds all covariates at mean/mode
+  t(sim.uk[, 3:6]) # by the transpose of the simulated coefficient, not including cutpoints
+```
+
+Next, we need to generate our threshold outpoints between the likelihood of voters choosing `No` over `Maybe`, and `Maybe` over `Yes`. We do this by slicing out the model's estimate for the cutpoint and then calculating out the thresholds accordingly.
+
+```{r}
+threshold1 <- sim.uk[,1] # Pull No|Maybe cutpoint
+threshold2 <- sim.uk[,2] # Pull Maybe|Yes cutpoint
+
+probc1 <- plogis(threshold1 - pred) # P(No)
+probc2 <- plogis(threshold2 - pred) - probc1 # P(Maybe)
+probc3 <- 1 - probc2 - probc1 # P(Yes)
+```
+
+We can calculate the average predicted probabilities in a simple table like so:
+
+```{r}
+# Results
+means <- cbind(mean(probc1), mean(probc2), mean(probc3))
+sds <- cbind(sd(probc1),sd(probc2),sd(probc3))
+presults <- rbind(means,sds)
+colnames(presults) <- c("No","Maybe","Yes")
+rownames(presults) <- c("Mean","SD")
+print(round(presults, digits=4))
+```
+
+And then we can compare our results to the predicted probabilities determined by the `predict` function.
+
+```{r}
+# Predict Test
+predict <- predict(ologit, newdata=df_mean, "probs" )
+
+# Show Approval With Predictions Correctly
+cbind(app_brown_sq, predict)
+
+# find the average for "MP_resign - Yes"
+mean(predict[,3])
+```
+
+We can see that our calculations produced near identical results to that of the `predict` function.
+
+```{r}
+c(presults[1, 3], # by-hand calculation
+  mean(predict[,3])) # predict function
+```
+
+## Analysis: Predicted Probability Graphs
+
+The graph below shows the average predicted probability for a voter who believes MPs should not resign at each level of PM Gordon Brown's approval. We interpret the results as follows:
+
+* For a voter who completely disapproves of PM Gordon Brown's approval, the probability that the voter believes the MPs should not resign is approximately 0.10, on average, after controlling for age, income, and gender.
+
+```{r, fig.height=6, fig.width=7}
+x1 <- list(title = "PM Brown's Approval", dtick = 1, zeroline = FALSE)
+y1 <- list(title = "P(Should Not Resign)")
+
+plot_ly(type = 'scatter', mode = 'lines') %>%
+  add_trace(x =~ app_brown_sq, y =~apply(probc1, 1, quantile, .5), 
+            line = list(color='rgb(125,100,125)'), name = 'P(Should Not Resign)') %>%
+  add_trace(x =~app_brown_sq, y =~apply(probc1, 1, quantile, .975), 
+            line = list(color = 'transparent'), name = 'Upper CI', showlegend = FALSE) %>%
+  add_trace(x =~app_brown_sq, y =~apply(probc1, 1, quantile, .025), fill = 'tonexty', 
+            fillcolor='rgba(125,100,125,0.2)', 
+            line = list(color = 'transparent'), name = 'Lower CI', showlegend = FALSE) %>%
+  layout(xaxis = x1,
+         yaxis = y1)
+```
+
+The graph below shows the average predicted probability for a voter who believes MPs should maybe resign at each level of PM Gordon Brown's approval. We interpret the results as follows:
+
+* For a voter who completely approves of PM Gordon Brown's approval, the probability that the voter believes the MPs should maybe resign is approximately 0.17, on average, after controlling for age, income, and gender.
+
+
+```{r, fig.height=6, fig.width=7}
+x2 <- list(title = "PM Brown's Approval", dtick = 1, zeroline = FALSE)
+y2 <- list(title = "P(Should Maybe Resign)")
+
+plot_ly(type = 'scatter', mode = 'lines') %>%
+  add_trace(x =~ app_brown_sq, y =~apply(probc2, 1, quantile, .5), 
+            line = list(color='rgb(0,100,80)'), name = 'P(Maybe Resign)') %>%
+  add_trace(x =~app_brown_sq, y =~apply(probc2, 1, quantile, .975), 
+            line = list(color = 'transparent'), name = 'Upper CI', showlegend = FALSE) %>%
+  add_trace(x =~app_brown_sq, y =~apply(probc2, 1, quantile, .025), fill = 'tonexty', 
+            fillcolor='rgba(0,100,80,0.2)', 
+            line = list(color = 'transparent'), name = 'Lower CI', showlegend = FALSE) %>%
+  layout(xaxis = x2,
+         yaxis = y2)
+```
+
+Finally, the graph below shows the average predicted probability for a voter who believes MPs should resign at each level of PM Gordon Brown's approval. We interpret the results as follows:
+
+* For a voter who scores PM Gordon Brown's approval as a zero out of 10, the probability that the voter believes the MPs should resign is approximately 0.78, on average, after controlling for age, income, and gender.
+
+```{r, fig.height=6, fig.width=7}
+x3 <- list(title = "PM Brown's Approval", dtick = 1, zeroline = FALSE)
+y3 <- list(title = "P(Should Resign)")
+
+plot_ly(type = 'scatter', mode = 'lines') %>%
+  add_trace(x =~ app_brown_sq, y =~apply(probc3, 1, quantile, .5), 
+            line = list(color='rgb(255,100,80)'), name = 'P(Should Resign)') %>%
+  add_trace(x =~app_brown_sq, y =~apply(probc3, 1, quantile, .975), 
+            line = list(color = 'transparent'), name = 'Upper CI', showlegend = FALSE) %>%
+  add_trace(x =~app_brown_sq, y =~apply(probc3, 1, quantile, .025), fill = 'tonexty', 
+            fillcolor='rgba(255,100,80,0.2)', 
+            line = list(color = 'transparent'), name = 'Lower CI', showlegend = FALSE) %>%
+  layout(xaxis = x3,
+         yaxis = y3)
+```
+
+
+
+# First Differences
+
+First differences calculations estimate the differences between two levels of our dependent variable while holding all other variables constant. 
+
+```{r}
+# Calculate First Differences Along P(Not Resign)-P(Maybe resign)
+first.difference <- probc1 - probc2
+
+# Calculate First Differences Along P(Maybe Resign - Yes Resign)
+first.difference2 <- probc2 - probc3
+
+# Calculate First Differences Along P(Resign - Should Not Resign)
+first.difference3 <- probc3 - probc1
+```
+
+Ultimately, we see little difference among those who think that the MPs *should not* resign and *maybe* resign. The large differences in opinions occur between those who think the MPs should resign and those who believe that they should not.
+
+The panel below shows the difference between those who believe the MPs implicated in the expense scandal should not resign and those that believe they should maybe resign. The average difference between these two outcomes is 0.03%
+
+```{r, fig.height=6, fig.width=7}
+x4 <- list(title = "PM Brown's Approval", dtick = 1, zeroline = FALSE)
+y4 <- list(title = "P(Should Not Resign - Maybe Resign)")
+
+plot_ly(type = 'scatter', mode = 'lines') %>%
+  add_trace(x =~ app_brown_sq, y =~apply(first.difference, 1, quantile, .5), 
+            line = list(color='rgb(125,100,125)'), name = 'P(Should Not Resign - Maybe Resign)') %>%
+  add_trace(x =~app_brown_sq, y =~apply(first.difference, 1, quantile, .975), 
+            line = list(color = 'transparent'), name = 'Upper CI', showlegend = FALSE) %>%
+  add_trace(x =~app_brown_sq, y =~apply(first.difference, 1, quantile, .025), fill = 'tonexty', 
+            fillcolor='rgba(125,100,125,0.2)', 
+            line = list(color = 'transparent'), name = 'Lower CI', showlegend = FALSE) %>%
+  layout(xaxis = x4,
+         yaxis = y4)
+```
+
+The panel in below shows the difference between those who believe the MPs implicated in the expense scandal should maybe resign and those that believe that they should resign. The average difference between voters who believe that the MPs should maybe resign and voters who think that the MPs should resign is approximately 0.54%.
+
+```{r, fig.height=6, fig.width=7}
+x5 <- list(title = "PM Brown's Approval", dtick = 1, zeroline = FALSE)
+y5 <- list(title = "P(Maybe Resign - Yes Resign)")
+
+plot_ly(type = 'scatter', mode = 'lines') %>%
+  add_trace(x =~ app_brown_sq, y =~apply(first.difference2, 1, quantile, .5), 
+            line = list(color='rgb(0,100,80)'), name = 'P(Maybe Resign - Yes Resign)') %>%
+  add_trace(x =~app_brown_sq, y =~apply(first.difference2, 1, quantile, .975), 
+            line = list(color = 'transparent'), name = 'Upper CI', showlegend = FALSE) %>%
+  add_trace(x =~app_brown_sq, y =~apply(first.difference2, 1, quantile, .025), fill = 'tonexty', 
+            fillcolor='rgba(0,100,80,0.2)', 
+            line = list(color = 'transparent'), name = 'Lower CI', showlegend = FALSE) %>%
+  layout(xaxis = x5,
+         yaxis = y5)
+```
+
+
+Finally, the panel below shows the difference between those who believe the MPs implicated in the expense scandal should resign and those that believe that they should not resign. The average difference between voters who believe that the MPs should resign and voters who think that the MPs should not resign is approximately 0.51%.
+
+```{r, fig.height=6, fig.width=7}
+x6 <- list(title = "PM Brown's Approval", dtick = 1, zeroline = FALSE)
+y6 <- list(title = "P(Yes Resign - Should Not Resign)")
+
+plot_ly(type = 'scatter', mode = 'lines') %>%
+  add_trace(x =~ app_brown_sq, y =~apply(first.difference3, 1, quantile, .5), 
+            line = list(color='rgb(255,100,80)'), name = 'P(Yes Resign - Should Not Resign)') %>%
+  add_trace(x =~app_brown_sq, y =~apply(first.difference3, 1, quantile, .975), 
+            line = list(color = 'transparent'), name = 'Upper CI', showlegend = FALSE) %>%
+  add_trace(x =~app_brown_sq, y =~apply(first.difference3, 1, quantile, .025), fill = 'tonexty', 
+            fillcolor='rgba(255,100,80,0.2)', 
+            line = list(color = 'transparent'), name = 'Lower CI', showlegend = FALSE) %>%
+  layout(xaxis = x6,
+         yaxis = y6)
+```
+
+
+
+
+## Analysis: Compare Non-Nested Models
+
+We theoretically chose to use a ordered logit instead of a multinomial because we believed there was a natural ordering to the dependent variable such that: No < Maybe < Yes. We can test our intuitive ordering by generating a multinomial model and comparing its AIC and BIC scores to see which fits the data best.
+
+```{r}
+mlogit <- multinom(MP_resign ~ app_Brown + income + age + gender, data=df, hessian=TRUE)
+```
+
+We use AIC and BIC to test the relative fit of these two models to our data instead of a Likelihood Ratio Test because the Likelihood Ratio Test is used for differences between nested models. We can see from the results below that our ordered logit fits the data much better.
+
+```{r}
+# Multinomial Logit
+AIC(mlogit) # 1400.629
+BIC(mlogit) # 1447.77
+
+# Ordered Logit
+AIC(ologit) # 1394.565
+BIC(ologit) # 1422.85
+```

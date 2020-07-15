@@ -1,0 +1,217 @@
+---
+title: "Multiple Imputation"
+author: "Andrew Fogarty"
+date: "4/22/2020"
+output: 
+     rmarkdown::html_vignette:
+          toc: TRUE
+          number_sections: TRUE
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r, message = FALSE, warning = FALSE}
+# load packages
+library(sbgcop)
+library(Amelia)
+library(reshape2)
+library(plotly)
+library(dplyr)
+```
+
+```{r, echo = FALSE}
+knitr::opts_chunk$set(fig.width=9, fig.height=8) 
+```
+
+
+# Introduction
+
+Missingness refers to observations or measurement that, in principle, could have been carried out but for whatever reason, failed to occur (Ward and Ahlquist 2018). Data that we collect, whether observational or experimental data, will with near certainty, have some values that are missing. Missing data comes in all sorts of ways from: (1) individuals not choosing to answer survey questions, (2) human error, (3) losing computer files, and (4) data is reported asynchronously. Missing data is easy to ignore since everyone deals with missing data. However, ignoring missing data can result in biased estimates and standard errors that are wildly deflated or inflated (King et al., 2001). 
+
+# Missing Data Concepts
+
+There are three standard ways to think about missing data.
+
+1. Missing Completely at Random (MCAR): The probability that any particular value is missing is independent of the values of any of the data, whether missing or observed.
+
+2. Missing at Random (MAR): The probability that an observed value is is unrelated to unobserved values, conditional on observed data.
+
+3. Not Missing at Random (NMAR): Missingness that depends on the value of the missing data, even after conditioning on the observed values. A mechanism separate from that which generates the observed data is causing the missingness.
+
+There is no statistical test that we can use to determine what type of missing data we have. MCAR, MAR, and NMAR are assumptions about the data we have. If we have MCAR or MAR, we can use data imputation techniques described here.
+
+# The Algorithm
+
+The general idea behind missing data imputation algorithms is that they all fill in the missing data with estimates of what real data would look like if it were available. Because the estimated data is by nature uncertain, we replicate the missing data many times to incorporate the uncertainty into the analysis. We use the following process when using multiple imputation which can be time consuming and computationally expensive:
+
+1. Create multiple new data sets
+
+2. Estimate model parameters on each data set
+
+3. Combine and summarize the results from each estimation
+
+
+
+# Missingness Maps
+
+`Amelia` includes a nice method, `missmap`, to help us visualize our missing data. To demonstrate its ease of use and utility, consider the following data set:
+
+
+```{r}
+## simulate data
+set.seed(1)
+n <- 100
+x1 <- rnorm(n) ; x2 <- rnorm(n) ; x3 <- rnorm(n)
+y <- 1 + 2*x1 -1*x2 + 1*x3 + rnorm(n)
+
+## organize into matrix
+raw <- cbind(y, x1, x2, x3)
+
+## simulate missingness
+naMat <- matrix(rbinom(n*4, 1, .7),
+                nrow=nrow(raw), ncol=ncol(raw))
+naMat[naMat==0] <- NA
+
+## remove observations
+data <- raw * naMat
+
+## plot missing data
+data <- data.frame(data)
+missmap(data)
+
+## summarize missingness
+missStats <- apply(data, 2, function(x){sum(is.na(x))/nrow(data)})
+missStats <- matrix(missStats,
+                    ncol=1,
+                    dimnames=list(colnames(data),
+                                  'Prop.Missing'))
+```
+
+# Gaussian Copula Methods
+
+While there are a number of different data augmentation methods ranging from Multiple Imputation via Chained Equations (MICE) to Bayesian Multiple Imputation, this applied demonstration will focus on a new cutting-edge model that uses Gaussian copulas. Copulas are a way to decompose a multivariate distribution such that the dependence across variables can be considered separately from the marginal distribution of each variable. Once the new distribution is created, we sample from it when new values are needed (Ward and Ahlquist 2018).
+
+# Building an Imputation Model
+
+Imputation is about predicting the missing data with minimum variance. Consequently, we want to take advantage of all the information we have available to build an imputation model. This means that we include all variables that are feasible to manage; ignoring which side of the equation the variable will be on. The more information we use, the more credible the MAR assumption. Sometimes, standardizing our variables helps improve imputation speed and convergence.
+
+
+## Gaussian Copulas in Practice
+
+Using the previously generated data above, the goal is to show how to conduct inference on the effect of $x_{1}$, $x_{2}$, and $x_{3}$ on $y$ after imputing the missing values. The main function that we will use is `sbgcop.mcmc` which requires us to set the following four arguments:
+
+1.$Y$ - A matrix with missing values to be imputed. The object passed to the argument must be in matrix format. Users should only include variables that can provide information to the imputation algorithm. For example, this can include lags and leads of a variable in the case of time series cross-sectional data. Identification variables, such as actor names, abbreviations, or years, should not be included in the matrix.
+
+2. `nsamp` - Number of Markov chain iterations. Since this is a Bayesian estimation scheme, we must pass the number of iterations for which we want the Markov chain to run. If `nsamp` is set to 100, then the Markov chain will run for 100 iterations and 100 imputed data sets will be produced.
+
+3. `odens` - Number of iterations between saved samples. The `odens` argument specifies how often an iteration from the Markov chain should be saved. Thus, if `nsamp` is set to 100 and `odens` is set to 4, 25 imputed data sets will be returned by sbgcop.mcmc.
+
+4. `seed` - Random seed integer. Since this is a Bayesian model and we will be sampling from distributions to arrive at parameter values,
+one should always pass an integer to the seed argument.
+
+We run the Markov chain for 2000 iterations and save every 10th iteration. We store the output from `sbgcop.mcmc` to `sbgcopOutput`.
+
+```{r}
+sbgcopOutput <- sbgcop.mcmc(Y=data, nsamp=2000, odens=10, seed=1)
+```
+
+The output `sbgcopOutput` contains the following objects:
+
+1. `C.psamp` - Contains posterior samples of the correlation matrix structured as an array of size p x p x `nsamp`/`odens` where p indicates the number of variables included in the imputation process. In our case, the `data` object includes 4 variables and we ran the Markov chain for 2000 iterations saving every tenth. Thus giving us dimensions of: 4 x 4 x 200. Each value in this array is providing us with the estimated association between a pair of parameters at every saved iteration of the Markov chain.
+
+We show an example below using the 1st and 5th saved iterations.
+
+```{r}
+sbgcopOutput$C.psamp[,,c(1,5)]
+```
+
+### Trace Plot
+
+To generate a trace plot of this data we need to restructure our data from wide to long.
+
+```{r}
+sbgcopCorr = reshape2::melt(sbgcopOutput$C.psamp)
+
+# remove cases where variable is the same in both columns
+sbgcopCorr = sbgcopCorr[sbgcopCorr$Var1 != sbgcopCorr$Var2,]
+
+# construct an indicator for pairs of variables
+sbgcopCorr$v12 = paste(sbgcopCorr$Var1, sbgcopCorr$Var2, sep='-')
+
+print(head(sbgcopCorr))
+```
+
+Using the `reshape2` package we have reformatted the array into a data frame, in which the first two columns designate the variables for which a correlation is being estimated, the third an indicator of the saved iteration, the fourth the correlation, and the fifth an indicator designating the variables being compared. 
+
+
+```{r}
+list1 <- unique(sbgcopCorr$v12)
+
+lapply(list1, function(j) {
+  current_j = j # pull current var
+  temp_data <- sbgcopCorr %>% filter(v12 == current_j) # subset df
+  plot_ly( # plot
+    data = temp_data,
+    name = ~v12,
+    x = ~ Var3,
+    y = ~ value,
+    type = "scatter",
+    mode='lines'
+  )
+}) %>% subplot(
+  nrows = 4,
+  shareX = TRUE,
+  shareY = TRUE,
+  margin = 0.015,
+  which_layout =1)
+```
+
+The trace plots show that the Markov chain tends to converge rather quickly in this example. The `coda` package provides an excellent set of diagnostics to test convergence in more depth.
+
+## Inference
+
+After conducting the imputation and evaluating convergence, we now use the imputed data sets to conduct inferential analysis. For the purpose of this example, we estimate the effect of $x_{1}$, $x_{2}$, and $x_{3}$ on $y$. `sbgcop`, generated 200 copies of our original data set in which posterior samples of the original missing values have been included. Each of these copies are saved in the output from `sbgcop.mcmc`, which has dimensions of 100 x 4 x 200. The first two dimensions of this object correspond to the original dimensions of our
+data object, and the third corresponds to the number of saved iterations from the Markov chain.
+
+Having generated a set of imputed data sets, our next step is to use a regression model to estimate the effect of our independent variables on $y$. We cannot just use one of the imputed data sets, as this would not take into account the uncertainty in our imputations. Instead we run several regression on as many of the imputed data sets generated by `sbgcop.mcmc` that we think are appropriate. For the sake of this example, we utilize all 200 imputed data sets, but typically randomly sampling around 20 imputed data sets should be be sufficient
+
+Each time we run the regression model, we will save the coefficient and standard errors for the independent variables and organize the results into a matrix as shown below.
+
+```{r}
+coefEstimates <- NULL
+serrorEstimates <- NULL
+for( copy in 1:dim(sbgcopOutput$'Y.impute')[3]){
+  # extract copy from sbgcopOutput
+  copyDf <- data.frame(sbgcopOutput$'Y.impute'[,,copy])
+  names(copyDf) <- colnames(sbgcopOutput$Y.pmean)
+  # run model
+  model <- lm(y~x1+x2+x3,data=copyDf)
+  # extract coefficients
+  beta <- coef(model)
+  coefEstimates <- rbind(coefEstimates, beta)
+  # extract standard errors
+  serror <- sqrt(diag(vcov(model)))
+  serrorEstimates <- rbind(serrorEstimates, serror)
+}
+
+print(head(coefEstimates))
+```
+
+The last step is to combine each of the estimates using using Rubin's rule. Many existing packages have implemented functions to aid in this last step, one could use the pool function from `mice` or the `mi.meld` function from `Amelia II` as below.
+
+```{r}
+paramEstimates <- Amelia::mi.meld(q=coefEstimates, se=serrorEstimates)
+print(paramEstimates)
+```
+
+The resulting parameter estimates take into account the uncertainty introduced through the imputation process, and we can interpret them just as we would interpret the results from a typical regression.
+
+
+
+
+# Sources
+
+* Honaker, James, Anne Joseph, Gary King, Kenneth Scheve, and Naunihal Singh. "Amelia: A Program for Missing Data (Windows version) Cambridge, MA: Harvard University." (2001).
+
+* Ward, Michael D., and John S. Ahlquist. Maximum Likelihood for Social Science: Strategies for Analysis. Cambridge University Press, 2018.

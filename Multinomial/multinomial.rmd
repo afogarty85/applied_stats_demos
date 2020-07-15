@@ -1,0 +1,466 @@
+---
+title: "Multinomial Model Replications"
+author: "Andrew Fogarty"
+date: "8/11/2019"
+output: 
+     rmarkdown::html_vignette:
+          toc: TRUE
+          number_sections: TRUE
+editor_options: 
+  chunk_output_type: console
+---
+
+# Introduction
+
+How does the international system shape civil wars? Kalyvas and Balcells test whether or not there is a systemic explanation for the ways in which civil wars are fought, arguing that the Soviet Union was largely sponsoring rural-based insurgencies which employed irregular forms of warfare. By disaggregating civil wars into three types of conflicts (conventional, irregular, symmetric non-conventional (SNC)), the authors find a decline in irregular warfare following the end of the Cold War (Kalyvas and Balcells 2010, 418).
+
+Since the authors used Stata, we will replicate and extend their findings in R, by offering graphical plots, confidence intervals on the estimated probabilities, and robustness checks. We use multinomial logits to primarily to model unordered categorical data.
+
+
+```{r, message = FALSE}
+rm(list = ls())
+# load packages
+library(dplyr)
+library(ggplot2)
+library(nnet)
+library(MASS)
+library(stargazer)
+library(arm)
+library(lmtest)
+library(plotly)
+library(car)
+set.seed(1)
+```
+
+
+```{r}
+# load data
+df <- read.csv('https://raw.githubusercontent.com/afogarty85/replications/master/Technologies%20of%20Rebellion/KB2010replicationdataset.csv')
+
+df <- dplyr::select(df, c("technologyrebellion", "post1990",
+                          "roughterrain", "ethnicwar", "gdpcapita_fl")) 
+# select workhorse model variables
+
+df <- na.omit(df) # drop missing data
+```
+
+# Data
+
+## Dependent Variables
+
+```{r}
+# review the data
+summary(df)
+```
+
+The outcome variable ("Technology of Rebellion") is an unordered categorical variable which has three values representing different forms of warfare: conventional, irregular, and symmetric non-conventional (SNC). This variable is measured by looking at the type of weaponry used by \textbf{rebels} and the \textbf{state} during the first year of conflict.
+
+```{r, warning = FALSE, fig.height=6, fig.width=7}
+dv_count <- df %>% group_by(technologyrebellion) %>% tally()
+
+plot_ly(data = dv_count, type = 'bar') %>%
+  add_trace(x = ~technologyrebellion, y =~n, name = '') %>% layout(showlegend = FALSE)
+```
+
+
+\textbf{Conventional Warfare:} Conventional warfare emerges when rebels are able to militarily confront states using heavy weaponry such as field artillery and armor. In conventional wars, military confrontation is direct, either across well defined front lines or between armed columns. Conventional civil war takes place when the military technologies of states and rebels are matched at a high level (Kalyvas and Balcells 2010, 419).\\
+
+\textbf{Irregular Warfare:} Irregular or guerrilla warfare is a technology of rebellion whereby the rebels privilege small, lightly armed bands operating in rural areas (Fearon and Laitin 2003, 75); it is an expression of relative asymmetry between states and rebels. Rebels have the military capacity to challenge and harass the state, but lack the capacity to confront it in a direct and frontal way. Irregular civil war emerges when the military technologies of the rebels lag vis-a-vis those of the state (Kalyvas and Balcells 2010, 418).\\
+
+\textbf{Symmetric Non-Conventional:} This is the case when states are unable (or, in a few cases, unwilling) to deploy an organized military against poorly equipped insurgents. Neither incumbents nor insurgents used heavy weaponry. Often mistakenly described as guerrilla wars, SNC wars tend to arise in contexts characterized by extremely weak or collapsed states. We believe that the two categories of conventional and SNC war capture a real and important difference. SNC war is observed when the military technologies of states and rebels are matched at a low level (Kalyvas and Balcells 2010, 419).  \\
+
+## Primary Independent Variable
+
+The primary independent variable, `post1990`, is a dummy variable which takes on two values, `Pre-1991` and `Post-1990`. The authors identify the period of the Cold War as 1944-1990 and post-Cold War from 1991-2004 (the end of their dataset). The authors state that they established 1991 as the cutoff year because it corresponds to the dissolution of the Soviet Union and the emergence of several new states (Kalyvas and Balcells 2010, 423). This makes substantive sense as the official collapse of the Soviet Union occurred on December 26, 1991.\\
+
+
+```{r, warning = FALSE, fig.height=6, fig.width=7}
+iv_count <- df %>% group_by(post1990) %>% tally()
+
+plot_ly(data = iv_count, type = 'bar') %>%
+  add_trace(x = ~post1990, y =~n, name = '', 
+            marker = list(color = 'rgb(49,130,189)')) %>% layout(showlegend = FALSE)
+```
+
+
+# Analysis
+
+## Hypothesis
+
+Hypotheses are central to empirical work and unfortunately the authors do not present a hypothesis. In their absence, I have specified a reasonable one for them so that our analysis may be grounded in expectations.
+
+$H_{1}$: In a comparison of civil wars, those that started during the Cold War will be more likely to use irregular warfare than those that started after the Cold War. 
+
+## The Model
+
+This model is the author's primary workhorse model and is used to derive their most important findings. They do include five other models which test different variables such as post-communist regimes (dummy), marxist insurgents (dummy), and (log) military personnel (continuous).
+
+$$ \log(\frac{\pi_{i(J-1)}}{1-\pi_{iJ}}) = \beta_{0} + \beta_{1}\text{Post 1990}_{i} + \beta_{2}\text{Rough Terrain}_{i} + \beta_{3}\text{Ethnic War}_{i} + \beta_{4}\text{GDP Capita}_{i} $$
+
+
+Before running their model, we have to relevel our dependent variable such that irregular warfare is our base factor for comparison to match the author's work. We also make a few other alterations to the variable types to replicate the author's results.
+
+## Data Cleanup
+
+```{r}
+df$ethnicwar <- as.numeric(df$ethnicwar) # recode character to numeric
+df$ethnicwar <- car::recode(df$ethnicwar, "2='1'; 1='2'") # 1 = non-ethnic CW; 2 = ethnic CW
+
+df$technologyrebellion <- relevel(df$technologyrebellion, ref="Irregular") # base for APSR model results
+
+df$post1990 <- as.numeric(df$post1990) # recode character to numeric
+df$post1990 <- car::recode(df$post1990, "2='0'; 1='1'") # 0 = pre-1991; 1 = post-1990
+```
+
+Following the mathematical representation above, we fit the model below. Our results are identical to those found by the authors in their Stata analysis.
+
+## Fit the Model
+
+```{r}
+# Main Model for APSR paper: roughterrain ethnicwar gdpcapita_fl post1990
+mlogit1 <- multinom(technologyrebellion ~ roughterrain + ethnicwar + gdpcapita_fl + post1990, data = df)
+stargazer(mlogit1, type="text")
+```
+
+Now that we have fit our model, what can we do with it?
+
+### Interpret the Coefficient's Sign
+
+Civil wars fought after 1990 increases the likelihood of conventional and symmetric non-conventional (SNC) warfare as compared to irregular warfare (the baseline).
+
+### Interpret the Intercept
+
+A non-zero intercept indicates that the insurgents have some inherent propensity to use one form of warfare over another for reasons that are not captured in the model.
+
+### Interpret the Significance of the Coefficient
+
+A statistically significant coefficient tells us that our data is extraordinary or the assumption that $\hat{\beta}$ is 0 is wrong.
+
+### Likelihood Ratio Test
+
+We can run a likelihood ratio test (LRT) to compare our model with another nested model. We can see from this LRT, the null model has a higher log-likelihood (i.e., null model fits our data worse) as compared to the fully-specified model. The difference between the two models is statistically significant which means that we can reject the null which says that these two models fit our data the same. We could swap our different variables to try different nested combinations if we wanted to.
+
+```{r}
+# Likelihood Ratio Tests - Compare Nested Models
+lrtest(mlogit1, multinom(technologyrebellion ~ 1, data = df))
+```
+
+### Predicted Probabilities
+
+What we really want from our model is predicted probabilities. We generate predicted probabilities by sequencing our primary independent variable while holding all other factors constant at their mean. This is a three step process.
+
+### Predicted Probabilities: Step 1
+
+Sequence the independent variable along all of its possible values.
+
+```{r}
+sqpost1990 <- c(0, 1) # 0 = pre1991; 1 = post1990
+```
+
+### Predicted Probabilities: Step 2
+
+Prepare hypothetical data to generate predictions. While we could create some out-of-sample data just as easily, we are going to hold all of our variables at the mean while allowing our primary independent variable to vary. It is important the model's variable order is followed (i.e., `post1990` is the last variable in `mlogit1`, thus it is last here).
+
+```{r}
+# technologyrebellion ~ roughterrain + ethnicwar + gdpcapita_fl + post1990
+inject1 <- data.frame(1, roughterrain = mean(df$roughterrain), 
+                      ethnicwar = mean(df$ethnicwar), 
+                      gdpcapita_fl = mean(df$gdpcapita_fl), 
+                      post1990 = sqpost1990)
+
+predict1 <- predict(mlogit1, newdata = inject1, type = "probs")
+```
+
+### Predicted Probabilities: Step 3
+
+Lastly, we interpret the results. Returning to our hypothesis, we stated that: In a comparison of civil wars, those that started during the Cold War will be more likely to use irregular warfare than those that started after the Cold War. 
+
+We find strong support for our hypothesis. If a civil war started during the Cold War, it had a 0.66% probability of being fought with irregular warfare, on average, after controlling for rough terrain, ethnic war, and GDP per capita. The first difference between the two time periods is roughly -0.39% (0.27 - 0.66). One limitation with this basic form of predicted probabilities is it does not yield confidence intervals for our estimates. We will fix this problem later.
+
+```{r}
+cbind(sqpost1990, predict1) # Results identical to STATA predicted probabilities
+```
+
+We can graph the results for $H_{1}$ like so:
+
+```{r, warning = FALSE, fig.height=6, fig.width=7}
+x_data = c(predict1[1,1], predict1[2,1], predict1[2,1] - predict1[1,1]) # pull probabilitites
+y_data = c("P(Irregular War|Pre-1991)", "P(Irregular War|Post-1990)", 
+           "P(Irregular War|Post-1990)-P(Irregular War|Pre-1991)")
+
+x <- list(title = "Probability", dtick = 0.10)
+y <- list(title = "")
+
+plot_ly(type = 'scatter', mode = 'markers') %>%
+  add_trace(x = ~x_data, y = ~y_data, name = '') %>% layout(title = "H(1): Predicted Probabilities",
+                                                showlegend = FALSE,
+                                                 xaxis = x,
+                                                 yaxis = y,
+                                                 margin = list(l = 350))
+```
+
+
+### Predicted Probabilities: By-Hand
+
+We can also calculate the predicted probabilities by-hand relatively easily. The point of this exercise is to show that the mathematics is not all that complicated.
+
+\tiny $\pi_{i1} = \frac{{1}}{{1+exp(-1.283 + 0.004*34.76 + 0.172*1.67 + 0.039*1.55 + 1.422*0) + exp(-0.973 + -0.025*34.76 + -0.245*1.67 + -0.468*1.55 + 2.756*0)}}$
+
+What we are doing below is we are multiplying our model coefficients by their sample means while specifying `pre1991` for our primary independent variable, represented by a `0`. This is because we want to derive the predicted probability for `technologyrebellion` during the Cold War (`pre1991 == 0`).
+
+```{r}
+denominator <- (1 +(exp(-1.283 + 0.004*34.76 + 0.172*1.67 + 0.039*1.55 + 1.422*0) +
+                      exp(-0.973 + -0.025*34.76 + -0.245*1.67 + -0.468*1.55 + 2.756*0)))
+1/denominator # would be a perfect match if we used more digits
+```
+
+
+
+
+## Simulations - Generate Confidence Intervals
+
+To generate confidence intervals for predicted probabilities, we need to use other packages which involve simulations. We will go through the process in steps.
+
+### Simulations: Step 1
+
+Our first step involves taking 50000 draws from a normal distribution which is feasible given that asymptotic normality is a maximum likelihood property. Simulation allows us to account for uncertainty when making predictions.
+
+
+```{r}
+sqpost1990 <- c(0,1) # vary the primary independent variable
+n.draws <- 50000 # specify the number of draws
+
+coefs <- coef(mlogit1) # pull the model coefficients
+vcov <- vcov(mlogit1) # pull the model variance-covariance matrix
+
+coef.mlogit1 <- c(coef(mlogit1)[1,], coef(mlogit1)[2,]) # place the coefficients in a list
+
+# simulate coefficients for each category
+sim.coefs <- mvrnorm(n.draws, mu = coef.mlogit1, Sigma = vcov)
+```
+
+If we run the `summary` command on our simulation results, we can see that the mean for each coefficient is very close to the estimate found in our model.
+
+```{r}
+summary(sim.coefs)
+```
+
+### Simulations: Step 2
+
+Next we want to divide our simulated data based on our dependent variable categories. So we slice our `sim.coefs` object such that the coefficients representing the `conventional warfare` are separated from those representing `SNC warfare`. 
+
+```{r}
+# divide simulation for each category of Y - Base is Irregular Warfare
+sim.conv.war <- sim.coefs[,1:5] # Conventional Warfare
+head(sim.conv.war)
+
+sim.snc.war <- sim.coefs[,6:10] # SNC  Warfare
+head(sim.snc.war)
+```
+
+Then, we want to specify two data frames that specifies our model which holds all values at their mean other than the primary independent variable `post1990`. We then transform the data frames into data matricies such that we can use matrix multiplication.
+
+```{r}
+# Set Data to Average Values
+pre1991 <- data.frame(1, roughterrain = df$roughterrain, 
+                      ethnicwar = df$ethnicwar, 
+                      gdpcapita_fl = df$gdpcapita_fl, 
+                      post1990 = 0)
+
+pre1991 <- data.matrix(pre1991)
+
+post1990 <- data.frame(1, roughterrain = df$roughterrain, 
+                       ethnicwar = df$ethnicwar, 
+                       gdpcapita_fl = df$gdpcapita_fl, 
+                       post1990 = 1)
+
+post1990 <- data.matrix(post1990)
+```
+
+### Simulations: Step 3
+
+Third, we want to initiate a loop and matrix multiply our sample's average values instantiated in `pre1991` with the simulated coefficients representing `conventional warfare`. We then wrap this matrix multiplication in our link function $\exp$. Remember that our base category throughout this process is `irregular warfare`. Before running the calculations however, we need to build some containers to store our results.
+
+```{r}
+pp.conv.war.pre1991 <- matrix(NA, nrow=n.draws)
+pp.conv.war.post1990 <- matrix(NA, nrow=n.draws)
+
+pp.snc.war.pre1991 <- matrix(NA, nrow=n.draws)
+pp.snc.war.post1990 <- matrix(NA, nrow=n.draws)
+```
+
+
+```{r, echo=TRUE, results='hide'}
+for(k in 1:n.draws){# Loop over coefficients
+  
+# CONV WAR - PRE 1991 - as compared to irregular war
+conv.war.pre1991 <- exp(pre1991 %*% sim.conv.war[k,]) # Matrix multiply + link function
+pp.conv.war.pre1991[k] <- mean(conv.war.pre1991)
+
+# CONV WAR - POST 1990
+conv.war.post1990 <- exp(post1990 %*% sim.conv.war[k,]) # 
+pp.conv.war.post1990[k] <- mean(conv.war.post1990)
+
+#SNC WAR - PRE 1991
+snc.war.pre1991 <- exp(pre1991 %*% sim.snc.war[k,]) # 
+pp.snc.war.pre1991[k] <- mean(snc.war.pre1991)
+
+#SNC WAR - POST 1990
+snc.war.post1990 <- exp(post1990 %*% sim.snc.war[k,])
+pp.snc.war.post1990[k] <- mean(snc.war.post1990)
+}
+```
+
+### Simulations: Step 4
+
+Lastly, to derive our predicted probabilities, we need to calculate them following our "by-hand" calculations above minus the link function.
+
+
+```{r, echo=TRUE, results='hide'}
+#################### Calculate probabilities and CI - Pre-1991
+## Irregular War  ##
+pp.irr.war.pre1991_b <- 1/(1 + conv.war.pre1991 + snc.war.pre1991) # Irregular Warfare = Base
+
+ir.ci.low.pre1991_b <- quantile(pp.irr.war.pre1991_b, 0.025)
+ir.mean.pre1991_b <- quantile(pp.irr.war.pre1991_b, 0.5)
+ir.ci.hi.pre1991_b <- quantile(pp.irr.war.pre1991_b, 0.975)
+
+## Conventional War  ##
+pp.conv.war.pre1991_b <- conv.war.pre1991/(1 + conv.war.pre1991 + snc.war.pre1991) # Conventional Warfare
+
+quantile(pp.conv.war.pre1991_b, 0.025)
+quantile(pp.conv.war.pre1991_b, 0.5)
+quantile(pp.conv.war.pre1991_b, 0.975)
+
+## SNC  War  ##
+pp.snc.war.pre1991_b <- snc.war.pre1991/(1 + conv.war.pre1991 + snc.war.pre1991) # Conventional Warfare
+
+quantile(pp.snc.war.pre1991_b, 0.025)
+quantile(pp.snc.war.pre1991_b, 0.5)
+quantile(pp.snc.war.pre1991_b, 0.975)
+```
+
+We repeat the process for `post1990`.
+
+```{r, echo=TRUE, results='hide'}
+#################### Calculate probabilities and CI - Post-1990
+## Irregular War  ##
+pp.irr.war.post1990_b <- 1/(1 + conv.war.post1990 + snc.war.post1990) # Irregular Warfare = Base
+
+ir.ci.low.post1990_b <- quantile(pp.irr.war.post1990_b, 0.025)
+ir.mean.post1990_b <- quantile(pp.irr.war.post1990_b, 0.5)
+ir.ci.hi.post1990_b <- quantile(pp.irr.war.post1990_b, 0.975)
+
+## Conventional War  ##
+pp.conv.war.post1990_b <- conv.war.post1990/(1 + conv.war.post1990 + snc.war.post1990) # Conventional Warfare
+
+quantile(pp.conv.war.post1990_b, 0.025)
+quantile(pp.conv.war.post1990_b, 0.5)
+quantile(pp.conv.war.post1990_b, 0.975)
+
+## SNC  War  ##
+pp.snc.war.post1990_b <- snc.war.post1990/(1 + conv.war.post1990 + snc.war.post1990) # Conventional Warfare
+
+quantile(pp.snc.war.post1990_b, 0.025)
+quantile(pp.snc.war.post1990_b, 0.5)
+quantile(pp.snc.war.post1990_b, 0.975)
+```
+
+Finally, we can calculate the first difference to determine if there is a statistically significant difference between values of our treatment variable.
+
+```{r, echo=TRUE, results='hide'}
+#################### - First Differences - Calculate probabilities and CI 
+pp.obs.irr.fd <- pp.irr.war.post1990_b - pp.irr.war.pre1991_b # Irregular Warfare
+
+ci.low.ir.fd <- quantile(pp.obs.irr.fd, 0.025)
+quantile(pp.obs.irr.fd, 0.5)
+ci.hi.ir.fd <- quantile(pp.obs.irr.fd, 0.975)
+
+pp.obs.conv.war.fd <- pp.conv.war.post1990_b - pp.conv.war.pre1991_b   # Conventional Warfare
+
+quantile(pp.obs.conv.war.fd, 0.025)
+quantile(pp.obs.conv.war.fd, 0.5)
+quantile(pp.obs.conv.war.fd, 0.975)
+
+pp.obs.snc.war.fd <- pp.snc.war.post1990_b - pp.snc.war.pre1991_b # SNC Warfare
+
+quantile(pp.obs.snc.war.fd, 0.025)
+quantile(pp.obs.snc.war.fd, 0.5)
+quantile(pp.obs.snc.war.fd, 0.975)
+##########################################
+```
+
+Finally, we can plot our results and review $H_{1}$ again.
+
+### Simulations: Plot H(1) Results
+
+```{r, warning = FALSE, fig.height=6, fig.width=7}
+x_data = c(ir.mean.pre1991_b, ir.mean.post1990_b, ir.mean.post1990_b - ir.mean.pre1991_b)
+y_data = c("P(Irregular War|Pre-1991)", "P(Irregular War|Post-1990)", 
+           "P(Irregular War|Post-1990) - P(Irregular War|Pre-1991)")
+
+ci_data = c(ir.ci.hi.pre1991_b - ir.ci.low.pre1991_b, 
+            ir.ci.hi.post1990_b - ir.ci.low.post1990_b, 
+            ci.hi.ir.fd - ci.low.ir.fd)
+
+x <- list(title = "Probability", dtick = 0.10)
+y <- list(title = "")
+
+plot_ly(type = 'scatter', mode = 'markers') %>%
+  add_trace(x = ~x_data, y = ~y_data, name = '',
+            error_x = list(
+              type = 'data',
+              array = ci_data)
+            ) %>% layout(title = "H(1): Simulated Predicted Probabilities",
+                                                showlegend = FALSE,
+                                                 xaxis = x,
+                                                 yaxis = y,
+                                                 margin = list(l = 350))
+```
+
+
+### Simulations: Does H(1) Still Hold?
+
+In this article, we have improved and extended the author's predictions by incorporating credible intervals to their predicted probabilities which were absent in their flagship political science journal article. To see if the author's hypothesis still holds, lets revisit the hypothesis again:
+
+$H_{1}$: In a comparison of civil wars, those that started during the Cold War will be more likely to use irregular warfare than those that started after the Cold War. 
+
+Judging from the graph above, we still find broad support for the author's hypothesis which is evident from the large positive predicted probability whose confidence interval is far from zero and whose first difference does not include zero in its confidence intervals.
+
+
+
+# Assumption Check
+
+When we use a multinomial logit, we use a model that assumes Independence from Irrelevant Alternatives (IIA). This means that the probability of selecting one choice (i.e., one level of the DV) is not affected by the presence or absence of a third alternative. While there is a statistical test, `hmftest`, available to test for IIA in the `mlogit` package, we can test for IIA by removing one choice at a time and then view the model's coefficients to look for considerable changes. If there are considerable changes, IIA is likely violated.
+
+We can run this test rather quickly. First, we will drop `SNC` because there are only a few cases of these types of wars. We can see below that the coefficient for our primary independent variable of interest barely changes, suggesting our model has no violation of IIA.
+
+
+```{r}
+dd <- df %>% filter(technologyrebellion != 'SNC')
+logit <- glm(technologyrebellion ~ roughterrain + ethnicwar + gdpcapita_fl + post1990, family=binomial(link="logit"), data=dd)
+summary(logit)
+stargazer(logit, type="text")
+```
+
+Next, we will drop `Conventional`. As we can see below, the coefficient for our primary independent variable for `SNC` is very close to our multinomial logit. Thus, we can be sure that we are not violating IIA.
+
+```{r}
+dd <- df %>% filter(technologyrebellion != 'Conventional')
+logit <- glm(technologyrebellion ~ 
+               roughterrain + ethnicwar + gdpcapita_fl + post1990, 
+             family=binomial(link="logit"), data=dd)
+
+stargazer(logit, type="text")
+```
+
+
+
+# Sources
+
+Kalyvas, Stathis N., and Laia Balcells. "International system and technologies of rebellion: How the end of the Cold War shaped internal conflict." American Political Science Review 104, no. 3 (2010): 415-429. Dataset: [here](https://raw.githubusercontent.com/afogarty85/replications/master/Technologies%20of%20Rebellion/KB2010replicationdataset.csv)
+
+
+
+
+

@@ -1,0 +1,499 @@
+---
+title: "Binary Regression Analysis"
+author: "Andrew Fogarty"
+date: "8/14/2019"
+output: 
+     rmarkdown::html_vignette:
+          toc: TRUE
+          number_sections: TRUE
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r, message = FALSE}
+# load necessary packages
+library(carData)
+library(stargazer)
+library(dplyr)
+library(knitr)
+library(MASS)
+library(faraway)
+library(plotly)
+library(arm)
+library(margins)
+set.seed(123)
+```
+
+
+# Introduction
+
+In October 1988, a plebiscite vote was held in Chile to determine whether or not Augusto Pinochet should extend his rule for another eight years. The package `carData` contains Chilean national survey data collected in April and May 1988. In this report, we are going to remain agnostic over the primary independent variable and we are going to explore the effects of several of our independent variables on the probability of voting for Pinochet's extension.
+
+# Data
+
+The data frame contains the following variables:
+
+* `region` - A factor with levels: C, Central; M, Metropolitan Santiago area; N, North; S, South; SA, city of Santiago
+
+* `population` - Population size of respondent’s community
+
+* `sex` - A factor with levels: F, female; M, male
+
+* `age` - In years
+
+* `education` - A factor with levels (note: out of order): P, Primary; PS, Post-secondary; S, Secondary
+
+* `income` - Monthly income, in Pesos
+
+* `statusquo` - Scale of support for the status-quo
+
+* `vote` - A factor with levels: A, will abstain; N, will vote no (against Pinochet); U, undecided; Y, will vote yes (for Pinochet)
+
+```{r}
+data(Chile) # load data
+summary(Chile) # summarize data
+```
+
+To begin, we first want to recode our dependent variable `vote`, such that it is binary. From our description above, we can see that `vote` currently contains 4 categories. A reasonable transformation is to recode `undecided` and `abstain` as `NA`. Next, we drop the missing values so we can proceed with the analysis.
+
+```{r}
+Chile$vote <- with(Chile, ifelse(vote == "Y", 1, ifelse(vote=="N", 0, NA))) 
+table(Chile$vote)
+
+Chile <- na.omit(Chile)
+```
+
+# Analysis
+
+Now, we can fit our first model. With binary dependent variables, we have the option of specifying three different link functions, logit, probit, and cloglog. In this analysis, we will only look at logit and probit for the sake of time and utility. cloglog models are rarely used, at least within the realm of political science. Our Logit model can be specified formally as:
+
+$$ Pr(Y) = \frac{\exp(\alpha + \beta_{1}statusquo_{i} + \beta_{2}age_{i} + \beta_{3}income_{i} + \beta_{4}sex_{i} + \beta_{5}education_{i})}{1 + \exp(\alpha + \beta_{1}statusquo_{i} + \beta_{2}age_{i} + \beta_{3}income_{i} + \beta_{4}sex_{i} + \beta_{5}education_{i})}  $$
+
+And our probit model can be specified formally as: 
+
+$$ Pr(Y) = \phi(\alpha + \beta_{1}statusquo_{i} + \beta_{2}age_{i} + \beta_{3}income_{i} + \beta_{4}sex_{i}  + \beta_{5}education_{i}  ) $$
+
+Translating this into R, our models are instantiated like so:
+
+```{r}
+logit1 <- glm(vote ~ statusquo + age + income + sex + education, 
+              data = Chile, family=binomial(link="logit")) 
+
+probit1 <- glm(vote ~ statusquo + age + income + sex + education, 
+               data = Chile, family=binomial(link="probit")) 
+```
+
+We can then compare the estimates of our two models via `stargazer`. Drawing interpretations from the sign and significance of the coefficients, we see that both models return the same results although the magnitude of the coefficients varies substantively across `statusquo`, `sex`, and `education`.
+
+* People who are in favor of the status quo are more likely to vote for Pinochet to remain in power
+
+* Males are less likely to vote for Pinochet than females
+
+* People with a secondary and post-secondary education are less likely to vote for Pinochet than those with a primary education
+
+```{r}
+stargazer(logit1, probit1, type="text", 
+          title="Who voted for Pinochet?", align = TRUE,
+          dep.var.labels = "Vote Yes",
+          column.labels = c("Logit", "Probit"),
+          model.names = FALSE)
+```
+
+## Analysis: Error Rate
+
+We can also see how well our model predicts our data. First, we want to pull the predicted values out of our model. Then we want to recode our predictions such that we recode any prediction less than `0.5` as a `0`, and any prediction greater than `0.5` as a `1` to create 2 simple classes. Then we can create a table, or confusion matrix, to review the results.
+
+```{r}
+Chile.pred <- logit1$fitted.values
+Chile.pred[Chile.pred < 0.5] <- 0
+Chile.pred[Chile.pred > 0.5] <- 1
+```
+
+The rows represent the observed data while the columns represent the predictions. We can see that our logit correctly classifies, or predicts, most cases. We can see that out of 867 `No` voters, our model's covariates predicts 808 voters correctly along with 59 false positives. We can also see that out of 836 `Yes` voters, our model's covariates correctly predicts 772 voters while incorrectly generating 64 false negatives.
+
+```{r}
+table(Chile$vote, Chile.pred)
+```
+
+We can also create a more general error rate which tells us the proportion of observations being predicted incorrectly by the logit model. This is calculated by taking 1-`accuracy`. `Accuracy` is derived by summing the true positive and true negative diagonals and dividing by the total number of observations. Our results tell us that our model is does relatively well because it incorrectly classifies roughly 7% of our sample.
+
+```{r}
+error.rate <- mean((logit1$fitted.values > 0.5 & Chile$vote == 0) | 
+                     (logit1$fitted.values < 0.5 & Chile$vote == 1))
+error.rate # 0.07222548
+```
+
+
+## Analysis: Predictions
+
+Predicted probability point estimates are the bread and butter of our binary models. While it is interesting to know that women were more likely to vote in favor of Pinochet than men, what we really want to know is by how much. What is the average probability that a woman votes for Pinochet? The probability that a female will vote in favor of keeping the military regime in power is, on average, 0.58, after controlling for their preference for the status quo, age, income, and education level.
+
+
+```{r}
+gender_levels <- levels(Chile$sex)
+
+logit.prob <- sapply(gender_levels, FUN=function(x){
+      mean(predict(logit1, type = "response", 
+                   newdata = data.frame(statusquo = mean(Chile$statusquo), 
+                     age = mean(Chile$age), 
+                     income = mean(Chile$income), 
+                     sex = x, 
+                     education = "S")))
+      })
+
+probit.prob <- sapply(gender_levels, FUN=function(x){
+      mean(predict(probit1, type = "response", 
+                   newdata = data.frame(statusquo = mean(Chile$statusquo), 
+                     age = mean(Chile$age), 
+                     income = mean(Chile$income), 
+                     sex = x, 
+                     education = "S")))
+      })
+
+QI <- data.frame(gender = gender_levels,
+                 logit.prob = logit.prob,
+                 probit.prob = probit.prob)
+row.names(QI) <- NULL
+
+kable(QI)
+```
+
+
+
+We can see from the results above that there is little difference in the predicted probabilities across our logit and probit models. The problem with this slightly more automated way of generated predicted probabilities is that we cannot yield confidence intervals around our estimates. For individual point predictions and confidence intervals, we can, however use the code below. This process can be fairly tedious depending on the number of predictions we want to make, however. To get around this problem, we must run simulations on our data, similar to the [multinomial logit analysis](http://seekinginference.com/stats/multinomial.html). 
+
+
+```{r}
+# hold all other variables at mean / mode; specify female gender
+df_gender <- data.frame(1, statusquo = mean(Chile$statusquo), 
+                     age = mean(Chile$age), 
+                     income = mean(Chile$income), 
+                     sex = "F", 
+                     education = "S")
+
+# generate predictions
+gender_predict <- predict(logit1, 
+                       newdata = df_gender, 
+                       type="response", 
+                       se.fit=TRUE)
+
+# generate confidence intervals
+gender_ci <- c(gender_predict$fit -1.96 * gender_predict$se.fit, # lower CI
+  gender_predict$fit + 1.96 * gender_predict$se.fit) # upper CI
+
+# prepare data
+QI2 <- data.frame(gender = 'female',
+                 logit.prob = gender_predict$fit,
+                 logit.ci.lower = gender_ci[1],
+                 logit.ci.upper = gender_ci[2])
+kable(QI2)
+```
+
+
+## Analysis: Simulations
+
+To generate confidence intervals for predicted probabilities, we need to use other packages which involve simulations. We will go through the process in steps.
+
+### Simulations: Step 1
+
+Our first step involves taking 10000 draws from a normal distribution which is feasible given that asymptotic normality is a maximum likelihood property. Simulation is what allows us to account for uncertainty when making predictions.
+
+
+```{r}
+logit1 <- glm(vote ~ statusquo + age + income + sex + education, 
+              data = Chile, family=binomial(link="logit")) 
+
+sqsex <- c('F','M') # vary the primary independent variable
+n.draws <- 10000 # specify the number of draws
+
+coefs <- coef(logit1) # pull the model coefficients
+vcov <- vcov(logit1) # pull the model variance-covariance matrix
+
+# simulate coefficients for each category
+sim.coefs <- mvrnorm(n.draws, mu = coefs, Sigma = vcov)
+```
+
+If we run the `summary` command on our simulation results, we can see that the mean for each coefficient is very close to the estimate found in our `stargazer` model results.
+
+```{r}
+summary(sim.coefs)
+```
+
+### Simulations: Step 2
+
+Then, we want to instantiate one data frame that specifies our model. The model should hold all values at their mean other than the primary independent variable `sex`. We then transform the data frames into data matricies such that we can use matrix multiplication.
+
+```{r}
+# Set Data to Average Values
+df_female <- cbind(1, # intercept
+                   mean(Chile$statusquo), #status quo
+                     mean(Chile$age), #age
+                     mean(Chile$income), #income
+                     0, # female
+                     0, # education is set by mode, so PS = 0
+                     1) # secondary education = 1
+
+df_female <- data.matrix(df_female)
+
+#
+df_male <- cbind(1, # intercept
+                   mean(Chile$statusquo), #status quo
+                     mean(Chile$age), #age
+                     mean(Chile$income), #income
+                     1, # male
+                     0, # education is set by mode, so PS = 0
+                     1) # secondary education = 1
+
+df_male <- data.matrix(df_male)
+```
+
+### Simulations: Step 3
+
+Third, we want to initiate a loop and matrix multiply our sample's average values instantiated in `df_female`. We then wrap this matrix multiplication in our $\exp$ link function via the `ilogit` wrapper from the `faraway` package. Before running the calculations however, we need to build some containers to store our results.
+
+```{r}
+pp.female <- matrix(NA, nrow=n.draws)
+pp.male <- matrix(NA, nrow=n.draws)
+```
+
+
+```{r, echo=TRUE, results='hide'}
+for(k in 1:n.draws){# Loop over coefficients
+  print(paste(c("Now working on iteration", k), collapse=" "))
+# Female Voters
+  female.chile <- ilogit(df_female %*% sim.coefs[k,]) # Matrix multiply + link function
+  pp.female[k] <- mean(female.chile)
+  
+# Male Voters
+  male.chile <- ilogit(df_male %*% sim.coefs[k,]) # Matrix multiply + link function
+  pp.male[k] <- mean(male.chile)
+}
+```
+
+### Simulations: Step 4
+
+Lastly, to derive our predicted probabilities and credible intervals, we can calculate the 2.5th, 50th, and 97.5th percentile of each column.
+
+```{r, echo=TRUE, results='hide'}
+female.ci.low <- quantile(pp.female, 0.025)
+female.pp.mean <- quantile(pp.female, 0.5)
+female.ci.high <- quantile(pp.female, 0.975)
+
+male.ci.low <- quantile(pp.male, 0.025)
+male.pp.mean <- quantile(pp.male, 0.5)
+male.ci.high <- quantile(pp.male, 0.975)
+```
+
+We can see that our simulation draws very similar estimates and confidence (credible) intervals for `sex` as we found above using a much simpler point prediction function.
+
+```{r}
+# prepare data
+QI3 <- data.frame(gender = 'female',
+                 logit.prob = female.pp.mean,
+                 logit.ci.lower = female.ci.low,
+                 logit.ci.upper = female.ci.high)
+row.names(QI3) <- NULL
+kable(QI3)
+```
+
+It is also instructive to look graph our findings.
+
+```{r, warning = FALSE, fig.height=6, fig.width=7}
+x_data = c(female.pp.mean, male.pp.mean)
+
+y_data = c("P(Vote in Favor of Pinochet|Female)", 
+           "P(Vote in Favor of Pinochet|Male)")
+
+ci_data = c(female.ci.high - female.ci.low, 
+            male.ci.high - male.ci.low)
+
+x <- list(title = "Probability", dtick = 0.10, range = c(0, 1))
+y <- list(title = "")
+
+plot_ly(type = 'scatter', mode = 'markers') %>%
+  add_trace(x = ~x_data, y = ~y_data, name = '',
+            error_x = list(
+              type = 'data',
+              array = ci_data)
+            ) %>% 
+  layout(title = "Simulated Predicted Probabilities",
+                                                showlegend = FALSE,
+                                                 xaxis = x,
+                                                 yaxis = y,
+                                                 margin = list(l = 150))
+```
+
+
+While the above calculations may seem tedious for dummy variables, this process is worth its weight when we look to derive predicted probabilities and confidence (credible) intervals from continuous variables.
+
+
+## Analysis: Simulations - Continued
+
+How does a voter's preference for the status quo affect whether or not they will choose to vote for Pinochet to remain in power? We can find out by performing similar calculations as above. First, we sequence our primary independent variable, `statusquo`, across `1000` different possible values between its `min` and `max`. Then, we create a matrix which allows `statusquo` to vary, but holds all other values at its mean or mode. Finally, we matrix multiply our average value matrix with our simulated coefficients and wrap this calculation in the `ilogit` link function which automates this calculation for us: 
+$$\begin{equation}
+p = \frac{exp(\pi)}{1+exp(\pi)}
+\end{equation}$$
+
+
+```{r}
+statusquo_sequence <- seq(from=min(na.omit(Chile$statusquo)),
+                          to=max(na.omit(Chile$statusquo)),
+                          length.out=1000)
+
+# Set Data to Average Values
+df_sq <- cbind(1, # intercept
+                   statusquo_sequence, #status quo
+                     mean(Chile$age), #age
+                     mean(Chile$income), #income
+                     1, # male = mode
+                     0, # education is set by mode, so PS = 0
+                     1) # secondary education = 1; mode
+
+pred.statusquo <- ilogit(df_sq %*% t(sim.coefs))
+```
+
+We can then loop over our data to prepare it for graphing. To generate our average predicted probabilites, we will take our results above and apply the 50th percentile `quantile` function over each row. To generate our credible (confidence) intervals, we will apply the `quantile` function again at the 2.5th and 97.5th percentiles.
+
+```{r}
+y_data = apply(pred.statusquo, 1, quantile, .5)
+y_lower_ci = apply(pred.statusquo, 1, quantile, .025)
+y_upper_ci = apply(pred.statusquo, 1, quantile, .975)
+```
+
+We can then plug this data into `plotly` to generate a very aesthetic and interactive graph. We interpet the graph as follows: The probability that a male Chilean voter who is indifferent to the status quo will vote in favor of keeping Pinochet in power is 0.44, on average, after controlling for age, income, and education. 
+
+```{r, warning = FALSE, fig.height=6, fig.width=7}
+x <- list(title = "Support for the Status Quo", dtick = 0.5, zeroline = FALSE)
+y <- list(title = "P(Vote in Favor of Pinochet)")
+
+plot_ly(type = 'scatter', mode = 'lines') %>%
+  add_trace(x =~statusquo_sequence, y =~y_upper_ci, line = list(color = 'transparent'), 
+            name = 'Upper CI', showlegend = FALSE) %>%
+  add_trace(x =~statusquo_sequence, y =~y_lower_ci, fill = 'tonexty', fillcolor='rgba(0,100,80,0.2)', 
+            line = list(color = 'transparent'), name = 'Lower CI', showlegend = FALSE) %>%
+  add_trace(x =~statusquo_sequence, y =~y_data, line = list(color='rgb(0,100,80)'),
+            name = 'Average Probability') %>%
+  layout(xaxis = x,
+         yaxis = y)
+```
+
+With the hard work done, we can quickly alter our gender variable and juxtapose the probability of voting for Pinochet, given voter gender, while varying their preferences over the status quo. We can see from the graph below that the mean estimates for our predicted probabilities overlap, suggesting there is no difference between genders, only at extreme values of support for the status quo.
+
+```{r}
+# Set Data to Average Values
+df_sq2 <- cbind(1, # intercept
+                   statusquo_sequence, #status quo
+                     mean(Chile$age), #age
+                     mean(Chile$income), #income
+                     0, # female 
+                     0, # education is set by mode, so PS = 0
+                     1) # secondary education = 1; mode
+
+pred.statusquo2 <- ilogit(df_sq2 %*% t(sim.coefs))
+```
+
+```{r}
+y_data2 = apply(pred.statusquo2, 1, quantile, .5)
+y_lower_ci2 = apply(pred.statusquo2, 1, quantile, .025)
+y_upper_ci2 = apply(pred.statusquo2, 1, quantile, .975)
+```
+
+```{r, warning = FALSE, fig.height=6, fig.width=7}
+x <- list(title = "Support for the Status Quo", dtick = 0.5, zeroline = FALSE)
+y <- list(title = "P(Vote in Favor of Pinochet)")
+
+plot_ly(type = 'scatter', mode = 'lines') %>%
+  add_trace(x =~statusquo_sequence, y =~y_upper_ci2, line = list(color = 'transparent'), 
+            name = 'Upper CI', showlegend = FALSE) %>%
+  add_trace(x =~statusquo_sequence, y =~y_lower_ci2, fill = 'tonexty', fillcolor='rgba(3,29,68,0.2)', 
+            line = list(color = 'transparent'), name = 'Lower CI', showlegend = FALSE) %>%
+  add_trace(x =~statusquo_sequence, y =~y_data2, line = list(color='rgb(4,57,94)'),
+            name = 'Avg. Female Prob.') %>%
+  add_trace(x =~statusquo_sequence, y =~y_upper_ci, line = list(color = 'transparent'), 
+            name = 'Upper CI', showlegend = FALSE) %>%
+  add_trace(x =~statusquo_sequence, y =~y_lower_ci, fill = 'tonexty', fillcolor='rgba(0,100,80,0.2)', 
+            line = list(color = 'transparent'), name = 'Lower CI', showlegend = FALSE) %>%
+  add_trace(x =~statusquo_sequence, y =~y_data, line = list(color='rgb(0,100,80)'),
+            name = 'Avg. Male Prob.') %>%
+  layout(xaxis = x,
+         yaxis = y)
+```
+
+
+# Analysis - Marginal Change
+
+For continuous independent variables, we can take the first derivative of a predicted probability to generate its marginal effect. We will continue our examination of `statusquo` to generate some marginal effects. Instead of sequencing `statusquo` across its `min` and `max` over 1000 values, we are going to use its actual values so we can generate and predict accurate marginal changes across real values.
+
+
+```{r}
+statusquo_sequence <- sort(Chile$statusquo) # sequence real values
+
+# Set Data to Average Values
+df_sq <- cbind(1, # intercept
+                   statusquo_sequence, #status quo
+                     mean(Chile$age), #age
+                     mean(Chile$income), #income
+                     1, # male = mode
+                     0, # education is set by mode, so PS = 0
+                     1) # secondary education = 1; mode
+
+sim.coefs <- mvrnorm(n.draws, mu = coefs, Sigma = vcov) # sim again
+
+beta.sq <- sim.coefs[,2] # Pull Beta for status quo
+
+# Calculate Average Marginal Effect
+marginal.change <- beta.sq * dlogis(df_sq %*% t(sim.coefs))
+mean(marginal.change)
+
+# dlogis link function conveniently does the following:
+# qi1 <- df_sq %*% t(sim.coefs)
+# qi1.marginal.change <- beta.sq * (exp(-qi1) / (1 + exp(-qi1))^2)
+```
+
+To check our marginal effects calculations, we can do so by using the `margins` package.
+
+```{r}
+library(margins)
+margins1 <- margins(logit1, type = 'response')
+summary(margins1)
+```
+
+
+
+We interpet the average marginal change as follows: As the voter identifies one point more strongly with the status quo, the voter's probability for voting in favor of Pinochet increases by 0.19, on average, after controlling for age, income, gender, and education.
+
+## Analysis - Marginal Change Plot
+
+Lastly, we can take these calculations and plot them in `plotly` to view the complete marginal change picture across all possible `statusquo` values found in our survey sample.
+
+```{r}
+# loop over data applying quantile function
+y_data = apply(marginal.change, 1, quantile, .5)
+y_lower_ci = apply(marginal.change, 1, quantile, .025)
+y_upper_ci = apply(marginal.change, 1, quantile, .975)
+```
+
+
+
+```{r, warning = FALSE, fig.height=6, fig.width=7}
+x <- list(title = "Support for the Status Quo", dtick = 0.5, zeroline = FALSE)
+y <- list(title = "Marginal Change in P(Vote in Favor of Pinochet)")
+
+plot_ly(type = 'scatter', mode = 'lines') %>%
+  add_trace(x =~statusquo_sequence, y =~y_upper_ci, line = list(color = 'transparent'), 
+            name = 'Upper CI', showlegend = FALSE) %>%
+  add_trace(x =~statusquo_sequence, y =~y_lower_ci, fill = 'tonexty', fillcolor='rgba(0,100,80,0.2)', 
+            line = list(color = 'transparent'), name = 'Lower CI', showlegend = FALSE) %>%
+  add_trace(x =~statusquo_sequence, y =~y_data, line = list(color='rgb(0,100,80)'),
+            name = 'Average Marginal Effect') %>%
+  layout(xaxis = x,
+         yaxis = y)
+```
+
+
+
+
+# Sources
+
+* John Fox, Sanford Weisberg and Brad Price (2018). carData: Companion to Applied Regression Data Sets. R package version 3.0-2. https://CRAN.R-project.org/package=carData

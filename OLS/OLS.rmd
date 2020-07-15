@@ -1,0 +1,547 @@
+---
+title: "Linear Models"
+author: "Andrew Fogarty"
+date: "8/19/2019"
+output: 
+     rmarkdown::html_vignette:
+          toc: TRUE
+          number_sections: TRUE
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r, message = FALSE}
+# load necessary packages
+library(dplyr)
+library(googleVis)
+library(plotly)
+library(stargazer)
+library(knitr)
+library(MASS)
+```
+
+
+
+# Introduction
+
+The Association of Religion Data Archives (ARDA) has assembled a dataset that stitches together economic, social and demographic variables from the following three locations across 252 countries:
+
+* the 2010 United Nations Human Development Report (HDR)
+
+* the 2011 edition of the Central Intelligence Agency's (CIA) World Factbook
+
+* the 2008 US Department of State International Religious Freedom (IRF) report
+
+Since we have 244 potential variables to work with here, we are going to first trim down our dataset to a handful of potentially interesting variables to test a hypothesis we are interested in. This dataset is particularly interesting because it has measures for life satisfaction. A suitable research question might look like: What causes differences between the life satisfaction between countries?
+
+# Hypothesis
+
+$H_{1}$: In a comparison of countries, those with greater percentages of literate adults are more likely to have greater life satisfaction than those with fewer percentages of literate adults.
+
+# Data
+
+```{r}
+# load data
+df <- read.csv('https://raw.githubusercontent.com/afogarty85/replications/master/ARDA/socio_economic_religion_world.csv')
+
+# trim variables
+df <- dplyr::select(df, UNSATI, UN_GINI, UNPOP10, UNMAGE10, 
+                    UNMPI, UNGDPCAP, I_RELIGION, CIAOIL_P, 
+                    UNLIT, CIALAREA, UNPOLFRE, UNADJNS,
+                    UNNAME, COWCODE, CIANAME)
+df$UNPOLFRE <- as.factor(df$UNPOLFRE)
+```
+
+## Data: Variable Descriptions
+
+* `UNSATI` - Overall life satisfaction, most recent measure during 2006-2009 (0-10, higher means greater life satisfaction) 
+
+* `UN_GINI` - Distribution of income among individuals or households 2000-2010. 0 represents absolute equality; 100 represents absolute inequality.
+
+* `UNPOP10` - Total population in millions, 2010
+
+* `UNMAGE10` - Median age in years, 2010
+
+* `UNMPI` - Multidimensional Poverty Index value, 2000-2008 
+
+* `UNGDPCAP` - Gross domestic product (GDP) per capita in US dollars, 2008
+
+* `I_RELIGION` - Largest religion by proportion; (1 - Catholic, 2 - Orth. Christian, 3 - Other Christian, 4 - Muslim, 5 - Buddhist, 6 - Other)
+
+* `CIAOIL_P` - Oil production, in barrels per day
+
+* `UNLIT` - Adult literacy rate (percentage of population age 15 or older)
+
+* `CIALAREA` - Land area in square kilometers
+
+* `UNPOLFRE` - Democracy Score (0 - Authoritarian, 1 - Democratic w/ no alternation, 2 - Democratic)
+
+* `UNADJNS` - Adjusted net savings
+
+
+We can quickly look at the geospatial distribution of our dependent variable `UNSATI` with the help of `gvisGeoChart`. The graph shows a wide variance in overall life satisfaction distributed across the world, with the most happy people living in Western countries and in some oil producing states like Saudi Arabia. This matches an obvious and strong correlation between poor countries and poor life satisfaction which is evident from most of the African continent.
+
+```{r}
+df_worldplot <- dplyr::select(df, CIANAME, UNSATI) %>% na.omit(df_worldplot) # prepare new df for graph
+
+worldplot <- gvisGeoChart(df_worldplot, locationvar = "CIANAME", # gvis follows certain naming conventions
+                          colorvar = "UNSATI", # our dependent variable
+                          options=list(width=750, 
+                                       height=600))
+
+cat(worldplot$html$chart, file = "worldplot.html") # work around to get our graph to run inside our RMD
+htmltools::includeHTML("worldplot.html") # load the graph here
+```
+
+
+# Data: Dependent Variable
+
+We can also plot the distribution of our dependent variable. We can see that we have a continuous dependent variable that has a shape very similar to the normal distribution, which in part makes OLS a reasonable choice to model this data.
+
+```{r, warning = FALSE, fig.height=6, fig.width=7}
+plot_ly(data = df, type = 'histogram') %>%
+  add_trace(x =~UNSATI, name = 'Life Satisfaction', showlegend = F) %>%
+  layout(xaxis = list(
+    title = 'Life Satisfaction'),
+    yaxis = list(
+      title = 'Count of Countries'))
+```
+
+# Data: Independent Variable
+
+Following our hypothesis, we can also inspect our primary independent variable. We can see that the mode of our dataset is 100% adult literacy, but that our data has a long left-tail meaning that large portions of adults are not literate across the world.
+
+```{r, warning = FALSE, fig.height=6, fig.width=7}
+plot_ly(data = df, type = 'histogram') %>%
+  add_trace(x =~UNLIT, name = 'Adult Literacy Rate', nbinsx = 50, 
+            marker = list(color = 'rgb(49,130,189)'), showlegend = F) %>%
+  layout(xaxis = list(
+    title = 'Adult Literacy Rate'),
+    yaxis = list(
+      title = 'Count of Countries'))
+```
+
+# Data: Dependent + Independent Variable
+
+We can look at our data a little differently to better understand the relative differences between countries in their adult literacy and in their overall life satisfaction. We can see that a large number of Latin American countries, with Costa Rica in particular, have the highest values in terms of life satisfaction and adult literacy. On the opposite end, we can see many African countries encompassing the lowest values. The scatter plot is particularly helpful because it helps us look at, and interact with, the relative distances between countries. The slope of the best-fit line is positive, which indicates that adults with higher literacy levels have higher life satisfaction.
+
+```{r, warning = FALSE, fig.height=6, fig.width=7}
+scatter_df = dplyr::select(df, UNLIT, UNSATI, CIANAME)
+scatter_df <- na.omit(scatter_df)
+fit <- lm(UNSATI ~ UNLIT, data = scatter_df)
+
+plot_ly(data = scatter_df, type = 'scatter', mode = 'markers') %>%
+  add_trace(x =~UNLIT, y =~UNSATI, 
+            color =~CIANAME, showlegend = F) %>%
+  add_trace(x =~UNLIT, y = fitted(fit), mode = 'lines', 
+            line = list(color = 'rgb(49,130,189)'), name = 'Slope') %>%
+  layout(xaxis = list(
+    title = 'Adult Literacy Rate'),
+    yaxis = list(
+      title = 'Life Satisfaction'))
+```
+
+# Analysis:
+
+Before we run some models, we can first calculate them by hand so we have a better understanding of what the `lm()` function is doing for us. We will first begin by calculating a single linear regression by-hand and then move on to a multiple linear regression.
+
+## Analysis: Calculate Slope of Best-Fit Line
+
+We can find the slope apparent in the 2-way scatter above through the following calculation,
+
+$$ \beta = \frac{\sum_{i=1}^N (y_i - \bar{y})(x_i - \bar{x})}{\sum_{i=1}^N (x_i - \bar{x})^2} $$ 
+
+Whereby:
+
+* $y_i$ is the life satisfaction of the i-th country in the dataset
+
+* $\bar{y}$ is the mean life satisfaction
+
+* $x_i$ is the adult literacy rate of the i-th country in the dataset
+
+* $\bar{x}$ is the mean adult literacy rate
+
+* $\sum_{i=1}^N$ is a sum across all observations
+
+Translating this into R, we do the following:
+
+```{r}
+df2 = dplyr::select(df, UNLIT, UNSATI) # select X and Y variables
+df2 <- na.omit(df2) # remove NA
+df2 <- mutate(df2, mean_literacy = mean(UNLIT),
+               mean_satisfaction = mean(UNSATI),
+               numerator = (UNLIT - mean_literacy) * (UNSATI - mean_satisfaction),
+               denominator = (UNLIT - mean_literacy)^2)
+coef <- sum(df2$numerator) / sum(df2$denominator)
+```
+
+Now to check our work, we use the `lm` function.
+
+```{r}
+# check the calculation above
+fit1 <- lm(UNSATI ~ UNLIT, data = df2) # fit a model
+```
+
+And then we compare our by-hand coefficient to that of the `lm` function.
+
+```{r}
+c(coef, fit1$coefficients[2]) # match
+```
+
+While single linear regression is relatively straight forward, multiple linear regression requires a few more steps and the use of matrix multiplication.
+
+
+## Analysis: Multivariate Regression by Hand
+
+```{r}
+df_hand <- dplyr::select(df, UNSATI, UNLIT, 
+                         UNGDPCAP, UNPOP10, UN_GINI) # pull variables we will use in the model
+df_hand <- na.omit(df_hand) # remove NA
+```
+
+```{r}
+Y <- as.matrix(df_hand$UNSATI) # place Y in a vector
+
+X <- data.frame(intercept = 1, 
+                       literacy = df_hand$UNLIT, 
+                       gdp = df_hand$UNGDPCAP, 
+                       pop = df_hand$UNPOP10, 
+                       gini = df_hand$UN_GINI) # place X variables in a data frame
+
+X <- data.matrix(X) # convert to matrix
+```
+
+Through linear algebra, the formula for Ordinary Least Squares is parsimoniously listed below,
+
+$$ \hat{\beta} = (X'X)^{-1}X'Y $$
+Whereby the formula is read as: X prime X inverse $\times$ X prime Y
+
+* To generate the prime of a matrix, we transpose it. In R, we use the command `t(X)` to the transpose of the matrix `X`
+
+* To matrix multiply, we use the command `X %*% Y` which matrix-multiplies matrix `X` by matrix `Y`
+
+* To generate the inverse of a matrix, we use the command `solve(X)` calculates the matrix-inverse of matrix `X`
+
+We can calculate multiple linear regression by-hand if we follow the five steps below:
+
+| Step | Function | 
+|------|----|------|
+| 1   | Transpose X to create X'| 
+| 2    | Matrix Multiply X' by Y    | 
+| 3    | Matrix Multiply X' by X   |
+| 4    | Inverse Step 3  |
+| 5    | Matrix Multiply Step 4 by Step 2  |
+
+In R, each step looks like the following:
+
+```{r}
+# Step 1 - Transpose X
+transpose_X <- t(X)
+```
+
+```{r}
+# Step 2 - Matrix Multiply X' by Y
+x_prime_y <- transpose_X %*% Y
+```
+
+```{r}
+# Step 3 - Matrix Multiply X' by X
+x_prime_x <- transpose_X %*% X
+```
+
+```{r}
+# Step 4 - X Prime X - Inverse
+x_prime_x_inv <- solve(x_prime_x)
+```
+
+```{r}
+# Step 5 - multiply X Prime X Inverse by X Prime Y
+betas <- x_prime_x_inv %*% x_prime_y
+```
+
+However, we can use a simplified approach to calculate $\hat{\beta}$ in one line as shown below:
+
+```{r}
+betas <- solve(t(X) %*% X) %*% t(X) %*% Y
+stargazer(betas, type = 'text')
+```
+
+To see that we did calculation correctly, compare the results to the `lm` function.
+
+```{r}
+beta_check <- lm(UNSATI ~ UNLIT + UNGDPCAP + UNPOP10 + UN_GINI, data = df)
+c(betas, beta_check$coefficients)
+```
+
+## Analysis: Interpreting Results
+
+Now that we have a good handle on how we calculate our slope, the next task is its interpretation. Here, we fit a model which we think parsimoniously explains life satisfaction driven by our primary independent variable: literacy. As we know, literacy is a proxy for all sorts of wonderful qualities in adults. Given an ability to read, adults are able to attain better jobs, obtain an education, and importantly, earn more money. While literacy is important, we are also controlling for other factors, such as the natural log of a country's GDP, the natural log of a country's population, and the relative distribution of income across households.
+
+```{r}
+fit1 <- lm(UNSATI ~ log(UNLIT) + log(UNGDPCAP) + 
+             log(UNPOP10) + UN_GINI, data = df)
+summary(fit1)
+```
+
+
+```{r, results="asis"}
+stargazer(fit1,
+          type = "html",
+          title = "Literacy's Relationship with Life Satisfaction",
+          dep.var.labels = "Life Satisfaction",
+          covariate.labels = c("Literacy", "GDP", "Population", 
+                               "Inequality"),
+          ci = TRUE)
+```
+
+
+```{r}
+100*(exp(0.006057) - 1) # convert to percent change in Y
+```
+
+We interpret the results, its confidence interval, and the p-value in the following way:
+
+* *Effect:* A 1% increase in adult literacy is associated with a 0.01% change in life satisfaction, on average, after controlling for GDP, population, and inequality.
+
+* *Confidence:* If we were to draw repeated random samples and run the same regression on each sample, then 95% of the models’ 95% confidence intervals would contain the true parameter. Therefore, there is a .95 probability that the interval between 0.576 and 2.065 contains the true parameter.
+
+* *p-value:* Assuming literacy has no effect on life satisfaction, there is a 0.0007 probability that the absolute value of the t statistic would be 3.475 or more.
+
+### Analysis: Interpreting Results
+
+Here is how we interpret our results when X and Y are transformed by the natural logarithm.
+
+```{r}
+fit1 <- lm(log(UNSATI) ~ UNLIT + log(UNGDPCAP) + 
+             log(UNPOP10) + UN_GINI, data = df)
+summary(fit1)
+```
+
+```{r}
+100*(exp(0.006057) - 1) # convert to percent change in Y
+```
+
+* *Effect*: a 1% increase in a country's GDP is associated with a 0.6% increase in life satisfaction, on average, after controlling for literacy, population, and inequality.
+
+
+
+## Analysis: Understanding Control Variables
+
+What do "control" variables actually do in our regressions? The coefficient for our primary independent variable is `0.02308`. How did we get this exact number? 
+
+First, we will prepare some fresh data for this experiment:
+
+```{r}
+df_controls <- dplyr::select(df, UNSATI, UNLIT, UNGDPCAP, UNPOP10, UN_GINI)
+df_controls <- na.omit(df_controls)
+```
+
+Next, we will omit our primary independent variable from the regression.
+
+```{r}
+fit_control1 <- lm(UNSATI ~ log(UNGDPCAP, base = 1.1) + 
+             log(UNPOP10) + UN_GINI, data = df_controls)
+```
+
+Then we will save this model's residuals by:
+
+```{r}
+control_errors1 <- residuals(fit_control1)
+```
+
+Next, we exchange the dependent variable, `UNSATI`, with our primary IV, `UNLIT`.
+
+```{r}
+fit_control2 <- lm(UNLIT ~ log(UNGDPCAP, base = 1.1) + 
+             log(UNPOP10) + UN_GINI, data = df_controls)
+```
+
+And we save its residuals like so:
+
+```{r}
+control_errors2 <- residuals(fit_control2)
+```
+
+Next, we regress the errors from our first regression on the second. Remember, it is spoken as if "y" is regressed on "x" and not the other way around.
+
+```{r}
+fit_control3 <- lm(control_errors1 ~ control_errors2)
+```
+
+Notice that we now have our beta.
+
+```{r}
+fit_control3$coefficients[2]
+```
+
+
+# Analysis: Interactions and Marginal Effects
+
+Although interactions are uncommon in regression, how do we formulate and interpret them correctly? Normally, we have substantive reasons and theory for creating an interaction. An interaction term states that one variable *depends* on the level of another. Here, we have created one for show, whereby adult literacy is dependent on the level of inequality in a country.
+
+We aim for marginal effects with continuous interactions which means we take the first partial derivative of the expected value of $Y$ (life satisfaction) with respect to adult literacy.
+
+$$ \frac{\partial E(\text{life satisfaction}_i)}{\partial \text{adult literacy}_i} = \beta_1 + \beta_5\text{inequality}_i.$$
+First we run the model:
+
+```{r}
+fit1 <- lm(UNSATI ~ UNLIT + UN_GINI + log(UNGDPCAP, base = 1.1) + 
+             log(UNPOP10) + UNLIT*UN_GINI,  data = df)
+summary(fit1)
+```
+
+Then we pull the beta coefficients.
+
+```{r}
+beta_lit <- fit1$coefficients[2]
+beta_interaction <- fit1$coefficients[6]
+```
+
+Then sequence adult literacy.
+
+```{r}
+sq_lit <- seq(from = min(df_controls$UNLIT), 
+              to = max(df_controls$UNLIT), length.out = 10)
+```
+
+And calculate the marginal effect:
+
+```{r}
+marg.effect <- beta_lit + beta_interaction*sq_lit
+ME <- data.frame(sq_lit, marg.effect)
+kable(ME)
+```
+
+
+# Analysis: Marginal Effect Standard Errors
+
+To derive standard errors for our marginal effects, we must run simulations in a manner similar to the [logit](/stats/logit.html) and [multinomial](/stats/multinomial.html) analyses.
+
+```{r}
+coef <- coef(fit1) # pull coefs
+sigma <- vcov(fit1) # pull variance-covariance matrix
+sim.betas <- data.frame(mvrnorm(n = 1000, mu = coef, Sigma=sigma)) # simulate
+sim.betas <- dplyr::select(sim.betas, UNLIT, UNLIT.UN_GINI) # pull beta and interaction term
+head(sim.betas)
+```
+
+```{r}
+sq_lit <- as.data.frame(sq_lit) # transform sequence to a dataframe
+sq_lit <- mutate(sq_lit, one = 1) # add a variable for easy joining
+sim.betas <- mutate(sim.betas, one = 1) # do the same
+ME <- full_join(sim.betas, sq_lit) # join the data
+```
+
+```{r}
+ME <- mutate(ME, marg.effect = UNLIT # calcualte marginal effect
+             + UNLIT.UN_GINI*sq_lit) # beta + interaction term * sequenced x-variable
+```
+
+```{r}
+ME <- ME %>%
+      group_by(sq_lit) %>% 
+  summarize(me = mean(marg.effect),
+            LB = quantile(marg.effect, .025),
+            UB = quantile(marg.effect, .975))
+ME
+```
+
+
+## Analysis: Interactions and Marginal Effects Graphs
+
+```{r, fig.height=6, fig.width=7}
+plot_ly(data = ME, type = 'scatter', mode = 'lines') %>%
+  add_trace(x=~sq_lit, y=~me, name = 'Marginal Effect', line = list(color='rgb(0,100,80)')) %>%
+  add_trace(x =~sq_lit, y =~UB, line = list(color = 'transparent'), 
+            name = 'Upper CI', showlegend = FALSE) %>%
+  add_trace(x =~sq_lit, y =~LB, fill = 'tonexty', fillcolor='rgba(0,100,80,0.2)', 
+            line = list(color = 'transparent'), name = 'Lower CI', showlegend = FALSE) %>%
+  layout(xaxis = list(dtick = 10))
+```
+
+Interpretation:
+
+* When the adult literacy rate is 67, a 1 point increase in inequality is associated with a 0.07 increase in life satisfaction, on average, controlling for population and GDP.
+
+
+# OLS Assumptions Check
+
+## Zero Conditional Mean
+
+A violation of the zero conditional mean assumption risks biased coefficients. We check for violations of the zero conditional mean in the plot below, which depicts our residuals by a linear combination of our independent variables. In the plot, we look for a roughly flat red line along zero. We can see that the red line is indeed mostly flat with some slight curvatures towards the ends, likely owing to the fact that we have limited observations. We therefore assess that our primary model does not violate this assumption.
+
+```{r, fig.height=6, fig.width=8}
+plot(fit1, which = 1)
+```
+
+## Homoskedasticity
+
+The assumption of homoskedastic error consists of the following two components:
+
+1. $\epsilon_{i}$ is independent of $\epsilon_{j}$ conditional on X for all $i$ $\neq$ $j$.
+
+2. The variance of the error does not depend on the predictor: Var($\epsilon_{i}$|X) = Var($\epsilon_{i}$)
+
+The assumption that all the errors have the same variance is called homoskedasticity.
+
+The null for the Breusch-Pagan test is homoskedasticity. Given the results of our test; we reject the null and assume we have hetereoskedasticity. However, we need to be cautious about this test as it is sensitive to the number of observations.
+
+```{r}
+library(lmtest)
+library(sandwich)
+bptest(fit1)
+```
+
+We might also suspect evidence of heteroskedasticity in our plot below which shows some unevenness in the scatter plot particularly around the center values as they cluster further toward the right. However, it does not look too bad.
+
+```{r, fig.height=6, fig.width=8}
+plot(fit1, which = 1)
+```
+
+We can also judge heteroskedasticity from the next plot which if it showed a non-flat line. If we had homoskedastic data, the red line would be roughly flat, which is what we see.
+
+```{r, fig.height=6, fig.width=8}
+plot(fit1, which = 3)
+```
+
+Taken collectively, we judge that we have homoskedasticity and this means that practically, we do not have to incorporate robust standard errors, although we still might want to in order to be conservative.
+
+## Normality of Errors
+
+The normality of errors assumes that the errors must have this specific distribution:
+
+\begin{eqnarray}
+\epsilon \sim N(0, \sigma^2), &\\
+Corr(\epsilon_{j}, \epsilon_{k}) = 0, \forall j \neq k
+\end{eqnarray}
+
+Which means:
+
+1. all errors are normally distributed with a mean of 0,
+
+2. all errors are independent from one another,
+
+3. and all errors have the same variance.
+
+If the errors are not normally distributed, or do not have a mean of 0, then we say we have a model misspecification problem. If the errors are not independent from one another, we have an autocorrelation problem.
+
+We conduct several tests below which taken collectively, suggest that our errors are normal, as evidenced by: (1) the histogram of residuals which show a near normal distribution, (2) the shapiro test which fails to reject the null hypothesis that our residuals are drawn from a normal distribution, and (3) a normal Q-Q plot which shows only a few observations that deviate from the diagonal line at each end.
+
+
+```{r, fig.height=6, fig.width=8}
+hist(fit1$residuals, breaks = 50, main = "Model 2 Residuals", xlab="Residuals")
+```
+
+```{r}
+shapiro.test(fit1$residuals)
+```
+
+```{r, fig.height=6, fig.width=8}
+# qq plot
+plot(fit1, which = 2)
+```
+
+
+# Sources
+
+* Finke, Roger, and Brian J. Grim. "Cross-National Socio-Economic and Religion Data, 2011." The Association of Religion Data Archives (2011).[Data](http://thearda.com/Archive/Files/Descriptions/ECON11.asp)

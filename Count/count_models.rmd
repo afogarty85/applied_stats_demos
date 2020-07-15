@@ -1,0 +1,515 @@
+---
+title: "Count Models"
+author: "Andrew Fogarty"
+date: "9/04/2019"
+output: 
+     rmarkdown::html_vignette:
+          toc: TRUE
+          number_sections: TRUE
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r, message = FALSE}
+# load necessary packages
+library(dplyr)
+library(plotly)
+library(stargazer)
+library(knitr)
+library(MASS)
+library(arm)
+library(AER)
+library(margins)
+library(stats)
+set.seed(123)
+```
+
+
+# Introduction
+
+  Gelman and Hill (2007) collected New York City (NYC) "stop and frisk" data for 175,000 stops over a 15-month period in 1998-1999[^1] and it is this data that we will use in our count model analysis. We use count models, such as the Poisson, when each data point $y_{i}$ has no natural limit or number of successes (i.e., a binomial).
+
+[^1]: http://www.stat.columbia.edu/~gelman/arm/examples/police/frisk_with_noise.dat
+
+
+
+# Data
+
+
+* `precincts` - NYC police precinct, numbered 1-75
+
+* `ethnicity` - 1 = black, 2 = hispanic, 3 = white
+
+* `crime type` - 1 = violent, 2 = weapons, 3 = property, 4 = drug
+
+* `past.arrests` - the number of arrests within New York City in 1997 as recorded by the Division of Criminal Justice Services (DCJS) of New York State. This is a proxy for number of crimes committed by each ethnic group.
+
+* `pop` - population
+
+
+```{r}
+df <- read.table("https://raw.githubusercontent.com/afogarty85/replications/master/Stop%20and%20Frisk/stop_and_frisk.dat",
+skip = 6, header = TRUE)
+df <- na.omit(df)
+df <- aggregate(cbind(stops, past.arrests) ~ precinct + eth, data = df, sum)
+df$eth <- dplyr::recode(df$eth, `1` = 'black', `2` = 'hispanic', `3` = 'white')
+```
+
+# Hypothesis
+
+  To begin our analysis, we first specify a hypothesis:
+
+$H_{1}$: In a comparison of stop and frisk events, blacks are more likely to be searched than hispanics or whites.
+
+
+# Data: Dependent Variable
+
+  Since our dependent variable are the number of stop and frisk events (`stops`), let's first view our data's distribution by ethnicity (`eth`). The barplot below shows quite clearly that blacks are more likely to be stopped than hispanics or whites.
+
+```{r, warning = FALSE, fig.height=6, fig.width=7}
+dv_count <- df %>% group_by(eth) %>% tally(stops)
+dv_count$eth <- car::recode(dv_count$eth, "1='black'; 2='hispanic'; 3='white'") 
+
+plot_ly(data = dv_count, type = 'bar') %>%
+  add_trace(x = ~factor(eth), y =~n, name = '') %>% 
+  layout(showlegend = FALSE,
+         xaxis = list(
+    title = 'Ethnicity'),
+    yaxis = list(
+      title = 'Stop and Frisk Events'))
+```
+
+
+# Data: Dependent + Independent Variable
+
+  Because we have a continuous dependent variable, we can view its relationship with our primary independent variable of interest quite easily through a scatterplot. We can see a clear pattern across most NYC precincts where blacks are stopped and frisked more than hispanics or whites.
+
+```{r, warning = FALSE, fig.height=6, fig.width=7}
+plot_ly(data = df, type = 'scatter', mode = 'markers') %>%
+  add_trace(x = ~precinct, y=~stops, color =~factor(eth), showlegend = T) %>%
+  layout(xaxis = list(
+    title = 'NYC Police Precinct'),
+    yaxis = list(
+      title = 'Stop and Frisk Events'))
+```
+
+# Analysis
+
+  We begin by fitting our model using a poisson. The poisson distribution is used to model variation in count data, meaning data that can equal 0, 1, 2, etc.
+
+```{r}
+fit <- glm(stops ~ factor(eth) + factor(precinct), 
+           family = poisson(link = 'log'), data = df, offset=log(past.arrests))
+```
+
+## Analysis: Overdispersion Test
+
+  We begin by checking whether or not our data is overdispersed. Overdispersion occurs when our dependent variable's variance exceeds the mean. The poisson does not give us an independent variance parameter $\sigma$ which means that our result can be overdispersed. 
+
+```{r}
+mean(df$stops) # 584.0889
+var(df$stops) # 376742.9
+```
+
+  We can also test for this formally with a Z-score test. Z-tests the hypothesis that the Poisson model is overdispersed. In practice, it tests whether the data should be modeled as Poisson or negative binomial. We test for overdispersion by computing the following: 
+
+```{r}
+# check for overdispersion
+mu <- predict(fit, type = 'response')
+z <- ((df$stops - mu)^2 - df$stops) / (mu * sqrt(2))
+zscore <- lm(z ~ 1)
+summary(zscore)
+```
+
+  An alternative method is available here, which is only applicable to the relationship of poisson and negative binomial models, as well as zero inflated models. What we are testing here is whether or not the dispersion parameter is significantly greater than 0, corresponding to a Poisson dispersion equal to 1.0; meaning we should use a negative binomial.
+
+```{r}
+# fit a negative binomial for this test
+nbreg <- glm.nb(stops ~ factor(eth) + factor(precinct) + offset(log(past.arrests)), data = df)
+
+# boundary likelihood ratio test; test whether dispersion parameter greater than 0
+l_poisson <- logLik(fit)[1] # get log likelihood
+l_nb <- logLik(nbreg)[1] # get log likelihood
+LRtest <- -2 * (l_poisson - (l_nb)) # calculate likelihood ratio
+pchisq(LRtest, 1, lower.tail = FALSE) / 2
+```
+
+  Given the results above, we can reject the null of no overdispersion which means that real overdisperson exists in the data and that a negative binomial is preferred. To account for overdispersion, we can use a number of different models to better fit our count data which we will use later.
+
+## Analysis: Poisson Results
+
+  Tabling model fit for the moment, we can interpret our poisson model's results directly which states: Compared to the baseline category (blacks), hispanics have approximately the same rate of being stopped while whites have a `1 - exp(-0.41900122)` or 34% lower chance of being stopped.
+
+
+```{r, results = 'asis'}
+stargazer(fit$coefficients[1:3],
+          type = "html",
+          title = "Stop and Frisk Results",
+          dep.var.labels = "Stop and Frisks",
+          covariate.labels = c("Intercept", "Hispanics", "Whites"))  
+```
+
+  We can also use the `predict` command to generate predicted counts of stop and frisks for each row in our dataset.
+
+```{r}
+poisson.count <- predict(fit, type = "response")
+```
+
+  We can also use the `prediction` command to generate average predicted counts for our primary independent variable, `eth`. We can see that blacks and hispanics are, on average, exceedingly more likely to be stopped than whites.
+
+```{r}
+prediction(fit, at=list(eth = c('black','hispanic','white')))
+```
+
+## Analysis: Quasipossion
+
+  We use quasipossion models to account for overdispersion in count data. To fit a quasipossion, we make a simple change to the model specifications. We can see from its results that it no longer assumes an overdispersed parameter of 1. A careful inspection will also show much higher standard errors which is how quasipossion handles the overdispersion.
+
+```{r}
+fit2 <- glm(stops ~ factor(eth) + factor(precinct), 
+            family = quasipoisson(link = 'log'), data = df, offset = log(past.arrests))
+```
+
+```{r, results = 'asis'}
+stargazer(fit2$coefficients[1:3],
+          type = "html",
+          title = "Stop and Frisk Results",
+          dep.var.labels = "Police Stops",
+          covariate.labels = c("Intercept", "Hispanics", "Whites"))   
+```
+
+
+## Analysis: Negative Binomial
+
+  Given that we know the poisson is a poor fit for our data, we will compare the poisson to the negative binomial.
+
+```{r}
+#Negative Binomial
+nbreg <- glm.nb(stops ~ factor(eth) + factor(precinct) + offset(log(past.arrests)), data = df)
+```
+
+We can see that the model's coefficients are not all that different when we compare the poisson to the negative binomial.
+
+```{r, results = 'asis'}
+stargazer(nbreg$coefficients[1:3],
+          type = "html",
+          title = "Stop and Frisk Results",
+          dep.var.labels = "Police Stops",
+          covariate.labels = c("Intercept", "Hispanics", "Whites"))   
+```
+
+However, by comparing model fit, we can see that the negative binomial fits our data much better than the poisson.
+
+```{r}
+AIC(fit, nbreg)
+```
+
+We can also use the `prediction` command to generate average predicted counts for our primary independent variable, `eth`. We can see that blacks and hispanics are, on average, exceedingly more likely to be stopped than whites.
+
+```{r}
+nbreg.count <- predict(nbreg, type="response")
+prediction(nbreg, at=list(eth = c('black','hispanic','white')))
+```
+
+We can also visualize the difference in predicted counts between models at each NYC precinct by doing the following:
+
+```{r, warning = FALSE, fig.height=6, fig.width=7}
+count.compare <- data.frame(poisson = poisson.count,
+                            nbreg = nbreg.count,
+                            eth = df$eth)
+
+plot_ly(type = 'scatter', mode = 'markers') %>%
+  add_trace(y =~count.compare$poisson, name = 'Poisson') %>%
+  add_trace(y =~count.compare$nbreg, name = 'Negative Binomial') %>%
+  layout(xaxis = list(
+    title = 'NYC Police Precinct'),
+    yaxis = list(
+      title = 'Expected Count'))
+```
+
+
+# Zero Inflated Models
+
+  While we have lightly examined the poisson and negative binomial models for count data, there exists a wider spectrum of count models which excel at modeling count data with excessive amounts of zeros in the dependent variable. These models are: zero inflated negative binomial and zero inflated negative poisson. In this section, we will analyze count data with many zeros and use these models to better fit our data.
+  
+```{r}
+library(mvtnorm)
+library(pscl)
+
+# load data
+df <- read.csv('https://raw.githubusercontent.com/afogarty85/replications/master/German%20Socio-Economic%20Panel/mdvis.csv')
+```
+
+  The data we will use is from a subset of the German Socio-Economic Panel (SOEP). The subset was created by Rabe-Hesketh and Skrondal (2005). Only working women are included in these data. Beginning in 1997, German health reform in part entailed a 200 co-payment as well as limits in provider reimbursement. Patients were surveyed for the one year panel (1996) prior to and the one year panel (1998) after reform to assess whether the number of physician visits by patients declined - which was the goal of reform legislation. The response, or variable to be explained by the model, is numvisit, which indicates the number of patient visits to a physician's office during a three month period. The data is derived from the `COUNT` package.
+
+# Data
+
+Some of the data is described as follows:
+
+* `numvisit` - the number of patient visits to a physician's office during a three month period
+
+* `reform` - health reform in part entailed a 200 co-payment as well as limits in provider reimbursement; 1 = post-reform, 0 = pre-reform
+
+* `badh` - 1 = bad health, 0 = not bad health
+
+* `age` - patient age
+
+* `educ3` - patient has a 12th grade education
+
+We can see that the data appears to be clean and has no missing data from the summary table below.
+
+```{r}
+summary(df)
+```
+
+# Check Mean and Variance
+
+  Similar to the poisson, we begin by checking the extent to which the variance exceeds the mean. We can see from the results below that we probably have some overdispersion.
+
+```{r}
+# dependent variable: numvisit
+mean(df$numvisit) # 2.589133
+var(df$numvisit) # 16.12985
+``` 
+
+# Check for Zeros
+
+  Unlike the precinct data, this dataset contains a large number of zeros; roughly 30% of the dataset, which leads us to suspect we might need a zero inflated model.
+
+```{r}
+table(df$numvisit < 1) # 665 zeros
+```
+
+
+# Model a Poisson
+
+  Prior to fitting other count models, we should start by fitting a poisson and then determine whether or not alternatives should be sought. According to the tests below, we can see that our data is indeed overdispersed. 
+
+```{r}
+poisson <- glm(numvisit ~ factor(reform) + factor(badh) + educ3 + age, data = df, family = "poisson")
+summary(poisson)
+
+# check for overdispersion
+mu <- predict(poisson, type = 'response')
+z <- ((df$numvisit - mu)^2 - df$numvisit) / (mu * sqrt(2))
+zscore <- lm(z ~ 1)
+summary(zscore)
+# overdispersed
+```
+
+Adding onto the fact that 30% of the observations for our dependent variable are zeros, we should move to try a zero inflated model. We begin by fitting two different zero inflated models, the negative binomial and the poisson. We then compare their model fit through AIC and then through the vuong test.
+
+# ZINB and ZIP - Comparing Model Fit
+
+```{r}
+zinb <- zeroinfl(numvisit ~ factor(reform) + factor(badh) + educ3 + age, data = df, dist = "negbin")
+zip <- zeroinfl(numvisit ~ factor(reform) + factor(badh) + educ3 + age, data = df, dist = "poisson")
+
+AIC(zinb, zip, poisson) # ZINB fits better
+```
+
+The standard fit test for ZINB models is the Vuong test which compares the predicted fit values of the ZINB and ZIP; assessing whether there is a significant difference between the two.
+
+```{r}
+vuong(zinb, zip) # ZINB fits better
+# positive values: model 1 preferred over model 2
+# negative values: model 2 preferred over model 1,
+```
+
+A border likelihood ratio test can also be run to compare ZINB with ZIP. The method is identical to the one used previously when comparing poisson to negative binomial.
+
+```{r}
+# boundary likelihood ratio test; test whether dispersion parameter greater than 0
+l_poisson <- logLik(zip)[1] # get log likelihood
+l_nb <- logLik(zinb)[1] # get log likelihood
+LRtest <- -2 * (l_poisson - (l_nb)) # calculate likelihood ratio
+pchisq(LRtest, 1, lower.tail = FALSE) / 2
+```
+
+  Given the results above, we can reject the null of no overdispersion which means that real overdisperson exists in the data and that a negative binomial is preferred.
+
+
+## Interpret ZINB: Count Part
+
+```{r}
+summary(zinb)
+```
+
+We interpret the coefficients in the model in the following way:
+
+### Reform Variable
+
+```{r}
+# count part - reform
+exp(-0.107721) # 0.8978781
+```
+
+* Patients made about 10% fewer visits to the doctor following reform
+* Following reform, patients had an expected decrease in the rate of visits to the doctor by a factor of 0.897; controlling for all other variables
+
+
+## Interpret ZINB: Zero Part
+
+```{r}
+# zero part - reform
+exp(1.01365) # 2.755641
+```
+
+* Following reform, patients had 2.75 times greater odds of not visiting the doctor; controlling for all other variables. 
+
+
+## Interpret ZINB: Predict Counts w/ Standard Errors
+
+Next, if we want to generate predicted counts with standard errors, we do so by running simulations.
+
+```{r}
+n.draws <- 1000 # number of simulated sets of coefficients
+sim <- rmvnorm(n.draws, coef(zinb), vcov(zinb)) # sim
+
+# sequence independent variable
+sequence <- seq(min(df$age), max(df$age), by = 1)
+
+# Empty vectors to store the point estimates and confidence intervals
+pe.ov <- as.matrix(NA, nrow=length(sequence)) 
+lo.ov <- as.matrix(NA, nrow=length(sequence)) 
+hi.ov <- as.matrix(NA, nrow=length(sequence)) 
+
+for(j in 1:length(sequence)){ # Loop goes across distance values
+  
+  # Set the other independent variables to all of their observed values
+  # factor(reform) + factor(badh) + educ3 + age
+  x.sequence <- data.frame(intercept = 1, 
+                           reform  = df$reform , 
+                           badh = df$badh, 
+                           educ3 = df$educ3,
+                           age = sequence[j])
+  
+  x.sequence <- data.matrix(x.sequence)
+  
+  # Save average of linear predictor across all the observations
+  pp <- matrix(NA, nrow = n.draws)
+  
+  for(i in 1:n.draws){# Loop over coefficients
+    
+    # For each observation in the dataset
+    xb <- exp(x.sequence %*% sim[i, 1:5]) # log link function
+    pp[i] <- mean(xb)
+  }
+  # Compute point estimate and CI for each value of distance
+  pe.ov[j] <- quantile(pp, 0.5)
+  lo.ov[j] <- quantile(pp, 0.025) 
+  hi.ov[j] <- quantile(pp, 0.975)
+  
+} 
+
+# put results in df
+result_df = data.frame(age = sequence, 
+                       predicted_y = pe.ov,
+                       ci_low = lo.ov,
+                       ci_high = hi.ov)
+```
+
+### Plot: Expected Count of Doctor Visits
+
+```{r, warning = FALSE, fig.height=6, fig.width=7}
+x <- list(title = "Patient Age", dtick = 1, zeroline = FALSE)
+y <- list(title = "Expected Count")
+
+plot_ly(data = result_df, type = 'scatter', mode = 'lines') %>%
+  add_trace(x =~age, y =~ci_high, line = list(color = 'transparent'), 
+            name = 'Upper CI', showlegend = FALSE) %>%
+  add_trace(x =~age, y =~ci_low, fill = 'tonexty', fillcolor='rgba(0,100,80,0.2)', 
+            line = list(color = 'transparent'), name = 'Lower CI', showlegend = FALSE) %>%
+  add_trace(x =~age, y =~predicted_y, line = list(color='rgb(0,100,80)'),
+            name = 'Expected Count') %>%
+  layout(xaxis = x,
+         yaxis = y)
+```
+
+We interpret the results as follows: 
+
+* For a patient age 56, their expected number of visits to the doctor is 3, on average, after controlling for all other variables.
+
+
+## Interpret ZINB: Predict Zeros w/ Standard Errors
+
+* A prediction of success in the binary section here is a prediction that the DV has a zero count because it estimates that Prob(y=0) unlike conventional logit which is Prob(y=1)
+
+```{r}
+library(faraway) # ilogit function
+n.draws <- 1000 # number of simulated sets of coefficients
+sim <- rmvnorm(n.draws, coef(zinb), vcov(zinb)) # sim
+
+# sequence independent variable
+sequence <- seq(min(df$age), max(df$age), by = 1)
+
+# Empty vectors to store the point estimates and confidence intervals
+pe.ov <- as.matrix(NA, nrow=length(sequence)) 
+lo.ov <- as.matrix(NA, nrow=length(sequence)) 
+hi.ov <- as.matrix(NA, nrow=length(sequence)) 
+
+for(j in 1:length(sequence)){ # Loop goes across distance values
+  
+  # Set the other independent variables to all of their observed values
+  x.sequence <- data.frame(intercept = 1, 
+                           reform  = df$reform , 
+                           badh = df$badh, 
+                           educ3 = df$educ3,
+                           age = sequence[j])
+  
+  x.sequence <- data.matrix(x.sequence)
+  
+  # Save average of linear predictor across all the observations
+  pp <- matrix(NA, nrow = n.draws)
+  
+  for(i in 1:n.draws){# Loop over coefficients
+    # For each observation in the dataset
+    xb <- ilogit(x.sequence %*% sim[i, 6:10]) # logit link function 
+
+    pp[i] <- mean(xb)
+  }
+  # Compute point estimate and CI for each value of distance
+  pe.ov[j] <- quantile(pp, 0.5)
+  lo.ov[j] <- quantile(pp, 0.025) 
+  hi.ov[j] <- quantile(pp, 0.975)
+  
+} 
+
+result_df = data.frame(age = sequence, 
+                       predicted_y = pe.ov,
+                       ci_low = lo.ov,
+                       ci_high = hi.ov)
+```
+
+
+### Plot: Probability of Zero Doctor Visits
+
+
+```{r, warning = FALSE, fig.height=6, fig.width=7}
+x <- list(title = "Age", dtick = 1, zeroline = FALSE)
+y <- list(title = "Probability of Zero Doctor Visits")
+
+plot_ly(data = result_df, type = 'scatter', mode = 'lines') %>%
+  add_trace(x =~age, y =~ci_high, line = list(color = 'transparent'), 
+            name = 'Upper CI', showlegend = FALSE) %>%
+  add_trace(x =~age, y =~ci_low, fill = 'tonexty', fillcolor='rgba(0,100,80,0.2)', 
+            line = list(color = 'transparent'), name = 'Lower CI', showlegend = FALSE) %>%
+  add_trace(x =~age, y =~predicted_y, line = list(color='rgb(0,100,80)'),
+            name = 'Predicted Probability') %>%
+  layout(xaxis = x,
+         yaxis = y)
+```
+
+We interpret the results as follows: 
+
+* Among 40 year old women, the probability of having zero doctor visits is approximately 08%, on average, after controlling for all other variables
+
+The graph here is not all that exciting because the variable is not statistically significant. The point here is just to demonstrate how we would produce predicted probabilities for the logit given other data.
+
+# Sources
+
+* Gelman, Andrew, and Jennifer Hill. Data analysis using regression and multilevel/hierarchical models. Cambridge university press, 2006.
+
+* Hilbe, Joseph M. Negative binomial regression. Cambridge University Press, 2011.
+
+* https://www.rdocumentation.org/packages/COUNT/versions/1.3.4/topics/mdvis

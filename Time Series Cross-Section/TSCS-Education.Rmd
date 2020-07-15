@@ -1,0 +1,320 @@
+---
+title: "Time Series Cross-Section Analysis: Democracy and Education"
+author: "Andrew Fogarty"
+date: "8/2/2019"
+output: 
+     rmarkdown::html_vignette:
+          toc: TRUE
+          number_sections: TRUE
+editor_options: 
+  chunk_output_type: console
+---
+
+
+# Introduction
+
+Why are some countries more democratic than others? Existing accounts assume that improvements in democracy is driven mostly by economic development (GDP), coalitions, inequality, or resource abundance which seemingly eliminates the need to study this question. I challenge this view by arguing that institutions, particularly education, plays a more meaningful role in promoting democracy.
+
+
+
+
+```{r, message = FALSE}
+# load libraries
+library(googleVis)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(plotly)
+library(knitr)
+library(plm)
+library(MASS)
+library(lmtest)
+```
+
+```{r}
+df <- read.csv("https://raw.githubusercontent.com/afogarty85/replications/master/Education%20and%20Democracy/education_democracy.csv")
+```
+
+```{r}
+summary(df)
+```
+
+
+# Data
+
+In this analysis, we are going to examine the effect of education on levels of democracy across 105 countries from 1820 to 2010. The dataset used in this analysis stitches together three different datasets, of which the reader can learn more about in the sources section below. A brief description of the variables is as follows:
+
+* country - country name
+* year - year
+* tyr - total years of schooling, population aged 15-64
+* pri - primary school adjusted enrollment ratio %
+* sec - secondary school adjusted enrollment ratio %
+* ter - tertiary school adjusted enrollment ratio %
+* democ - polity democracy measure; 0 (min), 10 (max)
+* autoc - polity autocracy measure; 0 (min), 10 (max)
+* gdp - GDP in year 2000 international dollars
+* region - region of the world; 1) Eastern Europe and post Soviet Union (including Central Asia); 2) Latin America (including Cuba, Haiti & Dominican Republic); 3) North Africa & Middle East (including Israel, Turkey and Cyprus); 4) Subsaharan Africa; 5) Western Europe & North America (including Australia & New Zealand); 6) East Asia (Including Japan & Mongolia); 7) Southeast Asia; 8) South Asia; 9; The Pacific (excluding Australia & New Zealand); 10) The Caribbean
+* population - population
+* area - size of country
+
+
+
+## Geographic Coverage of our Data
+
+The plot below shows the geographic extent of our dataset. Specifically, it shows the average number of years of education that citizens (age 15-64) acquired from school in 2010.
+
+```{r, echo = FALSE}
+# World Overview Plot of Data
+worldplot2 <- gvisGeoChart(df, locationvar = "country", colorvar = "tyr",
+                          options=list(width=800, height=600))
+
+cat(worldplot2$html$chart, file = "worldplot2.html")
+```
+
+```{r}
+htmltools::includeHTML("worldplot2.html")
+```
+
+
+Following a similar pattern, the plot below shows each country's polity democracy score in 2010. What these two graphs tell us is that the intensity of the color green tends to covary across both variables: as citizens acquire more education, the level of a country's democracy increases.
+
+
+```{r, echo = FALSE}
+worldplot3 <- gvisGeoChart(df, locationvar = "country", colorvar = "democ",
+                          options=list(width=800, height=600))
+
+cat(worldplot3$html$chart, file = "worldplot3.html")
+```
+
+
+```{r}
+htmltools::includeHTML("worldplot3.html")
+```
+
+
+## Temporal Coverage of our Data
+
+Since we are evaluating time series cross-sectional data, we might also want to better understand the temporal coverage of our data.
+
+
+```{r}
+kable(df %>%
+        summarise(distinct_countries = n_distinct(country),
+                  distinct_years = n_distinct(year),
+                  min_year = min(year),
+                  max_year = max(year)))
+```
+
+
+
+## Dependent Variable
+
+The dependent variable is `democ`, or the level of democracy within a country at time $t$. A brief look at our dependent variable shows that within our sample, the level of democracy has been increasing over time.
+
+```{r, fig.height=6, fig.width=8}
+df_bar <- df %>% group_by(year) %>% summarize_at(vars(democ), list(mean), na.rm = TRUE)
+
+plot_ly(data = df_bar, type = 'bar') %>%
+  add_trace(x = ~year, y = ~democ, name  = "Polity Score") %>%
+  layout(xaxis = list(
+    title = 'Year'),
+    yaxis = list(
+      title = 'Sample Democracy Levels'))
+```
+
+
+## Primary Independent Variable
+
+The primary independent variable is `tyr`, or the total years of schooling at time $t$. Following a similar pattern, the average adult's level of education is also increasing over time.
+
+
+```{r, warning = FALSE, fig.height=6, fig.width=8}
+df_bar <- df %>% group_by(year) %>% summarize_at(vars(tyr), list(mean), na.rm = TRUE)
+
+plot_ly(data = df_bar, type = 'bar') %>%
+  add_trace(x = ~year, y = ~tyr, name  = "Years of Education") %>%
+  layout(xaxis = list(
+    title = 'Year'),
+    yaxis = list(
+      title = 'Sample Adult Education Levels'))
+```
+
+
+## Scatterplot: DV + IV
+
+```{r, warning = FALSE, message = FALSE, fig.height=6, fig.width=8}
+tyr_mean <- df %>% group_by(country) %>% 
+  summarize_at(vars(tyr), list(mean), na.rm = TRUE) # compute average education levels
+
+democ_mean <- df %>% group_by(country) %>% 
+  summarize_at(vars(democ), list(mean), na.rm = TRUE) # compute average democracy levels
+
+regLine <- lm(democ_mean$democ ~ tyr_mean$tyr) # generate slope
+
+plot_ly(type = 'scatter', mode = 'markers') %>%
+  add_trace(x = ~tyr_mean$tyr, y = ~democ_mean$democ, color = ~democ_mean$country, 
+            showlegend = FALSE) %>%
+  add_trace(x = ~tyr_mean$tyr, y = fitted(regLine), mode = "lines", name = 'Slope', 
+            showlegend = FALSE) %>%
+  layout(xaxis = list(
+    title = 'Avg. Years of Adult Education'),
+    yaxis = list(
+      title = 'Avg. Country Democracy Levels'))
+```
+
+
+
+
+
+
+# Time Series Cross-Sectional Analysis
+
+Now that we have a better understanding of our data and we can see a clear relationship between education and democracy, let's specify a hypothesis and test it with an appropriate model.
+
+$H_{1}$: In a comparison of countries, as the years of the schooling among adults increases, measures of democracy increases.
+
+Notice that the hypothesis implicitly refers to the *over time* effects of education on the levels of democracy. Thus, we need to specify *case* fixed effects in order to realize the over time variation. Case fixed effects are apparent in our equation given the absence of $_{t}$ from `country`.
+
+\begin{eqnarray}
+\small \text{Democracy}_{it} = \alpha + \beta_{1} \text{Education}_{it} + \beta_{2} \text{GDP}_{it} +  \beta_{3} \text{Population}_{it} + \beta_{4} \text{Democracy}_{it-1} + \text{Country}_{i} + \epsilon_{it} 
+\end{eqnarray}
+
+The dependent variable is included as a lagged independent variable because despite applying fixed effects to the regression, I have not accounted for any other issue associated with time series data such as auto-correlation. Lagging the dependent variable is one method to account for auto-correlation which means that I am modeling this time series as an Auto Regressive (AR) 1 process. While this makes a large assumption that all 105 countries are identical in their auto-correlation and rate of decay, there are few tools for panel models to improve our estimation currently. Additionally, the lagged dependent variable is also incorporated for an AR1 impulse response function analysis that we will incorporate later.
+
+
+# Log-Transform Data
+
+Before running our first model, we need to transform several our variables with the natural log to improve our model's fit.
+
+```{r}
+df$population <- log(df$population) # apply log
+df$gdp <- log(df$gdp) # apply log
+df <- df %>% dplyr::select(tyr, democ, gdp, population, country, year) # trim to used variables
+```
+
+
+# Case Fixed Effects: Derive Over Time Variation
+
+We can estimate the *over time* effects because the fixed effects procedure is as if we created a subset of our dataset by country, performed a regression for that subset, then subtracted the cross-sectional variation leaving only the time effects, and then repeated that for every country. After running 105 regressions, we would average the slopes together and weight it by its sample size (the number of countries) and the variance of our independent variables. The effect we derive is a *within* case over time analysis of itself. A templated interpretation is as follows: Within an average `case`, one unit increase in $X$, is associated with a $\hat{\beta}$ change in $Y$, on average, after controlling for all other variables.
+
+
+As we can see, the primary independent variable is statistically significant. The result tells us that: within an average country, a ten year increase in the average years of schooling for citizens aged 15-64 is associated with a 1.7 increase in the polity democracy score, on average, after controlling for GDP and population. This effect is quite notable as the polity democracy score is on an 11 point scale. However, a ten year increase in the average years of schooling is also quite challenging as many developing countries are averaging below 5 years (as of 2010) while all Western nations exceed 10. It is also worth noting that GDP is not statistically significant after controlling for education which challenges the findings of previous research which purports to demonstrate GDP's very close and significant link with democracy.[^1]
+
+[^1]: Boix, Carles. "Democracy, development, and the international system." American Political Science Review 105, no. 4 (2011): 809-828.
+
+
+```{r}
+# Case Fixed Effects - Over Time Variation
+pdata1 <- pdata.frame(df, index=c("country", "year"), row.names=FALSE) # case fixed effects
+caseFE <- plm(democ ~ tyr + gdp + population + dplyr::lag(democ, k=1), model="within", data=pdata1)
+summary(caseFE)
+```
+
+
+## Quick Model Diagnostics
+
+
+```{r}
+pbgtest(caseFE) # null = no serial correlation; cannot reject; model has no serial correlation of errors
+bptest(caseFE, studentize = F) # null = there is no heteroskedasticity; can reject; model has heteroskedasticity
+```
+
+
+
+
+
+# Impulse Response Function
+
+The impulse response function below is based on a simplified model above which depicts the marginal effect of average years of adult education over time. Substantively, this result tells us: A one year increase in average years of adult schooling for citizens aged 15-64 today ($t_{=0}$), is associated with an approximately 0.7 increase in the Polity democracy index one year from now ($t_{=1}$). The difference between the IRF and the regression results in the table above is due to the following: a regression represents average treatment effects across time while the IRF depicts average treatment effects at specified time intervals.
+
+```{r, message = FALSE, fig.height=6, fig.width=8}
+## Create model
+reg <- plm(democ ~ tyr + dplyr::lag(democ, k=1), model="within", data=pdata1)
+summary(reg)
+
+## Create loop
+iterations <- 10000
+results <- data.frame()
+
+coefs <- coef(reg) #store coefs
+vcov <- vcov(reg)   #store vcov
+sim.irf <- mvrnorm(iterations, coefs, vcov) # simulate new coefs 1000x
+head(sim.irf)
+data.sim <- data.frame(sim.irf)
+
+
+for(i in 1:iterations){
+  #print(paste(c("Now working on iteration", i), collapse=" "))
+  irf.funx <- c(data.sim[i,2], 
+                data.sim[i,2]*data.sim[i,1],
+                data.sim[i,2]*data.sim[i,1]^2,
+                data.sim[i,2]*data.sim[i,1]^3,
+                data.sim[i,2]*data.sim[i,1]^4,
+                data.sim[i,2]*data.sim[i,1]^5,
+                data.sim[i,2]*data.sim[i,1]^6,
+                data.sim[i,2]*data.sim[i,1]^7,
+                data.sim[i,2]*data.sim[i,1]^8,
+                data.sim[i,2]*data.sim[i,1]^9) # IRF function
+  
+# for every iteration, pull the IRF values for each time point
+
+# store 1000 IRF results
+results <- rbind(results, irf.funx)
+}
+
+# Mean IRFs
+mean.irfs <- apply(results, 2, mean)
+low.ci <- apply(results, 2, FUN=function(x){
+  quantile(x, .025)
+})
+low.ci
+
+hi.ci <- apply(results, 2, FUN=function(x){
+  quantile(x, .975)
+})
+hi.ci
+
+irf.data <- data.frame(time = 0:9, irf = mean.irfs, irf.lb = low.ci, irf.ub = hi.ci)
+
+g <- ggplot(data = irf.data, 
+       aes(x = time, y = irf, 
+           ymin = irf.lb, ymax = irf.ub)) + 
+  geom_path() + 
+  geom_ribbon(alpha=0.2) + 
+  theme_bw() + 
+  labs(x = "Year", y = "Marginal Effects: Education")  + 
+  theme(legend.position="bottom") + 
+  guides(color = guide_legend(ncol=1),fill = guide_legend(nrow=1)) +
+  geom_hline(aes(yintercept=0))
+
+g
+```
+
+
+# Time Fixed Effects: Derive Cross-Sectional Effects
+
+Over time analysis is not the only option available to us in time series cross-sectional analysis. We can also estimate the cross-sectional effect by choosing where we place our fixed effects. To derive the cross-sectional effect, we use time fixed effects by placing our fixed effects on `year`.
+
+We can estimate the *cross-sectional* effects because the fixed effects procedure is as if we created a subset of our dataset by year, performed a regression for that subset, then subtracted the time variation leaving only the cross-sectional effects, and then repeated that for every year. After running 39 regressions, we would average the slopes together and weight it by its sample size (the number of years) and the variance of our independent variables. The effect we derive is a *across* case analysis -- comparing one unit to the next. A templated interpretation is as follows: When comparing one case to another, if one case has $X$ worth, we expect on average, its $Y$ will be $\hat{\beta}$.
+
+The model's results tells us: When comparing one country to another, if one country's adult population has 10 years of education, we expect on average, that its polity democracy score will be 6.3 out of 11.
+
+
+```{r}
+pdata2 <- pdata.frame(df, index=c("year", "country"), row.names=FALSE) # year fixed effects
+timeFE <- plm(democ ~ tyr + gdp + population + dplyr::lag(democ, k=1), model="within", data=pdata2)
+summary(timeFE)
+```
+
+
+
+
+
+
+# Sources
+
+* Haber, Stephen, and Victor Menaldo. "Do natural resources fuel authoritarianism? A reappraisal of the resource curse." American political science Review 105, no. 1 (2011): 1-26. Dataset: [Haber, Stephen, and Victor Menaldo](https://stephen-haber.com/data/)
+
+* Barro, Robert and Jong-Wha Lee, 2013, "A New Data Set of Educational Attainment in the World, 1950-2010." Journal of Development Economics, vol 104, pp.184-198. Dataset: [Barro, Robert and Jong-Wha Lee](http://www.barrolee.com/Lee_Lee_LRdata_dn.htm)
+
+* Marshall, Monty G., Keith Jaggers, and Ted Robert Gurr. Polity IV project. Center for International Development and Conflict Management at the University of Maryland College Park, 2002. Dataset: [Polity](http://www.systemicpeace.org/inscr/p4v2017.xls)

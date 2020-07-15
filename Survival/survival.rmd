@@ -1,0 +1,308 @@
+---
+title: "Amazon: Case Study 3"
+author: "Andrew Fogarty"
+date: "4/25/2020"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# load libraries
+library(survival)
+library(coxed)
+library(survminer)
+library(tidyr)
+library(dplyr)
+library(plotly)
+library(MASS)
+```
+
+# Introduction
+
+Survival models are an important quantitative tool with myriad applications in political research. Within the field of Comparative Politics, survival models are heavily used to model democratic breakdown. Typically, political scientists use survival models to derive the average number of years a democratic regime survives, given a variable of interest. While survival models incorporate many different estimators, the most common is the Cox proportional hazards model, coxph(). This document replicates an Journal of Politics article published by Maeda, titled: [Two Modes of Democratic Breakdown: A Competing Risks Analysis of Democratic Durability](https://www.researchgate.net/profile/Ko_Maeda/publication/231823944_Two_Modes_of_Democratic_Breakdown_A_Competing_Risks_Analysis_of_Democratic_Durability/links/544a5b4e0cf2fc851ede73a9.pdf). Since Maeda’s analysis was conducted in Stata, we will replicate his work in R. His data and Stata analysis can be found on his [website](http://politicalscience.unt.edu/~maeda/).
+
+
+# Data
+
+```{r}
+# load data
+df <- read.csv('https://raw.githubusercontent.com/afogarty85/replications/master/Maeda/MaedaCSV.csv')
+```
+
+```{r}
+# review data
+summary(df)
+```
+
+Since Maeda did not provide a codebook, so we have to infer some of the values by reviewing the Stata “do” file and the dataset. The dependent variable is demend, which takes on two values, 0 if the democracy did not end, and 1 if it did. The 9 value used is a censoring value of sorts, as it the last demend entry for each country over time. The table below shows that democratic breakdown is indeed rare, as our sample captures only 45 different democratic breakdowns across 108 countries from 1950 to 2004.
+
+
+```{r}
+table(df$demend)
+```
+
+
+We can visualize the duration of democratic regimes by plotting demmonth as a histogram. It shows that the prospects for democracy are not great since nearly half of the regimes in our sample do not survive past 16 years.
+
+
+```{r}
+df_hist <- df %>% group_by(country) %>% summarize_at(vars(demmonth), list(max))
+
+plot_ly(data = df_hist, type = 'histogram') %>%
+  add_trace(x = ~demmonth, name  = "Duration of Survival", nbinsx = 40) %>%
+  layout(xaxis = list(
+    title = '# of Months'),
+    yaxis = list(
+      title = 'Count'))
+```
+
+
+
+# Kaplan-Meier Curve
+
+
+Since we have panel data, there are a few extra steps we must take so that it can be analyzed correctly. What we are going to do next is replicate the `stset` command in Stata by creating two variables, a `start_time` and `end_time`, which increases in count every observation until breakdown (failure). Once a democracy breaksdown, the counter should reset. To do this easily, we need a variable in our dataset that represents a unique number for each country during its survival spell. If a democratic regime fails multiple times within a single country, it should have multiple unique numbers. Maeda created a variable, demid, that does just this. The `start_time` and `end_time` calculation proceeds as follows:
+
+```{r}
+## start time
+df <- df %>%
+  group_by(demid) %>%
+  mutate(start_time = 0:(n() - 1))
+df <- ungroup(df)
+
+## end time
+df <- df %>%
+  group_by(demid) %>%
+  mutate(end_time = 1:(n()))
+df <- ungroup(df)
+```
+
+Now we can display our first survival curve. The Kaplan-Meier Curve displays the number of democracies still surviving at each month of measurement. It plots our sample’s dependent variable while taking into account no predictors. The graph is interpreted as follows: At $x$ months, the probability an average democratic regime is still surviving is approximately $x$%.
+
+```{r}
+km.curve <- Surv(time = df$start_time, time2 = df$end_time, event = df$demend)
+```
+
+```{r}
+plot(km.curve, main="Kaplan-Meier Plot", xlab="Months", ylab="Probability")
+```
+
+The cumulative hazard function expresses the risk of democratic regime breakdown. The graph is interpreted as follows: At $x$ months, the risk an average democratic regime will suffer from breakdown is approximately $x$ %.
+
+
+```{r}
+km.curve <- Surv(time = df$start_time, time2 = df$end_time, event = df$demend)
+```
+
+```{r}
+plot(km.curve, main="Kaplan-Meier Plot", xlab="Months", ylab="Probability", fun = "cumhaz")
+```
+
+
+# Cox Proportional Hazards Model
+
+We use a Cox proportional hazard model when our dependent variable consists of observations of durations. Cox models assume a proportional hazards assumption, an assumption that we will test later, which means that the baseline hazard does not vary across observations. Before fitting our first model, we need to make a few more alterations to replicate Maeda’s results.
+
+
+```{r}
+# make a new DV since Maeda used 9 for censors that Stata ignores but R does not
+df <- df %>% mutate(demend2 = ifelse(demend == 9, 0, demend))
+```
+
+
+Next, we replicate Maeda’s first model. Our results are close, but not a perfect match, which is generally expected when comparing replications conducted across statistical platforms.
+
+
+```{r}
+cox.model <- coxph(Surv(time = df$start_time, time2 = df$end_time, event = df$demend2) ~ dev + gro 
+                   + presi + mixed + majgovm + ethnic + ope + urb + prereg_ind 
+                   + prereg_mil + regiondem + postcw + impose 
+                   + cluster(country), method = 'efron', robust = TRUE, data=df)
+summary(cox.model) 
+```
+
+
+# Non Parametric Step Function (NPSF) Analysis
+
+We use a NPSF to generate myriad statistics and make comparisons between variables of interest. Since we have panel data, we need to specify id in the function below.
+
+
+```{r}
+npsf.model <- coxed(cox.model, method="npsf", id = df$country) # fit NPSF
+```
+
+By using the `exp.dur` attribute, we can retrieve the predicted duration for each country
+
+
+```{r}
+head(npsf.model$exp.dur)
+```
+
+We can also generate the mean or median for our sample, by specifying the proper statistic. The predicted mean duration of democratic regime survival is 543 months or 45 years.
+
+```{r}
+summary(npsf.model, stat="mean")
+```
+
+```{r}
+summary(npsf.model, stat="median")
+```
+
+
+The NPSF also provides useful means for deriving the cumulative baseline hazard function and the baseline survivor function. We retrieve this data by specifying the `baseline.functions` attribute.
+
+
+```{r}
+head(npsf.model$baseline.functions)
+```
+
+We can also readily graph this data in a few steps. Following a similar interpretation from the Kaplan-Meier Curve section, `cbh` tells us the risk of a democratic regime suffering from breakdown over time; assuming all covariates are 0. The next panel, `survivor`, tells us the probability that a democratic regime is still surviving by $x$ months.
+
+
+```{r}
+baseline <- gather(npsf.model$baseline.functions, cbh, survivor, key="survivefunction", value="value")
+ggplot(baseline, aes(x=time, y=value)) +
+     geom_line() +
+     xlab("Time") +
+     ylab("Function") +
+     facet_wrap( ~ survivefunction, scales = "free")
+```
+
+
+## Out of Sample Predictions
+
+We can also generate out of sample predictions. Let’s say we want to know how long a hypothetical or actual democratic regime is likely to survive that was not included in our dataset. We can specify the exact value for our variable of interest, in this case `dev` (GDP) following Maeda, while specifying all other values remain constant at our sample’s mean.
+
+
+```{r}
+new.country <- data.frame(dev = 9.5,
+                            gro = mean(na.omit(df$gro)),
+                            presi = mean(na.omit(df$presi)),
+                            mixed = mean(na.omit(df$mixed)),
+                            majgovm = mean(na.omit(df$majgovm)),
+                            ethnic = mean(na.omit(df$ethnic)),
+                            ope = mean(na.omit(df$ope)),
+                            urb = mean(na.omit(df$urb)),
+                            prereg_ind = mean(na.omit(df$prereg_ind)),
+                            prereg_mil = mean(na.omit(df$prereg_mil)),
+                            regiondem = mean(na.omit(df$regiondem)),
+                            postcw = mean(na.omit(df$postcw)),
+                            impose = mean(na.omit(df$impose)))
+
+forecast <- coxed(cox.model, newdata=new.country, method="npsf", id = df$country, bootstrap=TRUE, B=30)
+forecast$exp.dur
+```
+
+##  Marginal Changes in Expected Duration
+
+We can also compare two values within our variable of interest. Let’s say we are interested in determining the difference in democratic survival duration between a country with high GDP and a country with low GDP. We can specify two new dataframes where all cases receive either high or low GDP. We use the min and max as sufficient values for high and low. We would increase B to iterate many more times for more reliable results.
+
+```{r}
+min(na.omit(df$dev))
+```
+
+```{r}
+max(na.omit(df$dev))
+```
+
+
+```{r}
+marginal.changes <- coxed(cox.model, method = "npsf", id = df$country, bootstrap = TRUE, B = 5,
+            newdata =  dplyr::mutate(df, dev = 5.8),
+            newdata2 = dplyr::mutate(df, dev = 10.5))
+```
+
+Our results are interpreted as follows: A democratic regime with a high GDP such that `dev` = 10.5 will survive for 500 more months, on average, than a democratic regime with a low GDP, such that `dev` = 5.8.
+
+
+
+```{r}
+summary(marginal.changes, stat="mean")
+```
+
+```{r}
+summary(marginal.changes, stat="median")
+```
+
+
+# Survival Curves
+
+
+We can also visualize the marginal changes over time with the help of `survminer`. What we are doing in the code below is comparing the difference in survival duration between two democratic regimes with high and low GDP, while holding all other variables constant at the sample mean.
+
+
+```{r}
+# Create the new data  
+new_data <- data.frame(dev = c(5.8, 10.5),
+                            gro = mean(na.omit(df$gro)),
+                            presi = mean(na.omit(df$presi)),
+                            mixed = mean(na.omit(df$mixed)),
+                            majgovm = mean(na.omit(df$majgovm)),
+                            ethnic = mean(na.omit(df$ethnic)),
+                            ope = mean(na.omit(df$ope)),
+                            urb = mean(na.omit(df$urb)),
+                            prereg_ind = mean(na.omit(df$prereg_ind)),
+                            prereg_mil = mean(na.omit(df$prereg_mil)),
+                            regiondem = mean(na.omit(df$regiondem)),
+                            postcw = mean(na.omit(df$postcw)),
+                            impose = mean(na.omit(df$impose)))
+new_data
+```
+
+
+```{r}
+# Survival curves
+fit <- survfit(cox.model, newdata = new_data)
+ggsurvplot(fit, conf.int = TRUE, legend.labs=c("dev=5.8", "dev=10.5"),
+           ggtheme = theme_minimal(), data = df)
+```
+
+
+
+# Check Cox Assumptions
+
+
+In principle, the Schoenfeld residuals are independent of time. A plot that shows a non-random pattern against time is evidence of violation of the proportional hazard assumption. Visually, we are looking for non-straight line, indicating violation of proportional hazards assumption. Statistically, we are looking for p-values less than 0.5 in our hypothesis tests. We see violations in `urb`, `regiondem`, and `postcw`. Violations can generate biased coefficients and the general solution for this problem is to: (1) identify the violations, and (2) interact the violations with the natural log of time.
+
+```{r}
+test.ph <- cox.zph(cox.model) # non significant relationship is ideal
+test.ph
+```
+
+```{r}
+ggcoxzph(test.ph)
+```
+
+# Stepwise Model Selection
+
+We can also use a stepwise algorithm to help us find the best fitting model if we wanted to completely discard the theory and qualitative nature behind Maeda’s model selection.
+
+
+```{r}
+df2 <- na.omit(df) # a little heavy-handed, but stepAIC will not work with NAs
+
+cox.model <- coxph(Surv(time = df2$start_time, time2 = df2$end_time, event = df2$demend2) ~ dev + gro 
+                   + presi + mixed + majgovm + ethnic + ope + urb + prereg_ind 
+                   + prereg_mil + regiondem + postcw + impose 
+                   + cluster(country), method = 'efron', robust = TRUE, data=df2)
+
+stepwise2 <- stepAIC(cox.model, direction = 'backward')
+```
+
+
+```{r}
+stepwise2$anova
+```
+
+
+# Sources
+
+* Maeda, Ko. “Two modes of democratic breakdown: A competing risks analysis of democratic durability.” The Journal of Politics 72, no. 4 (2010): 1129-1143.
+
+
+
+
+
+
