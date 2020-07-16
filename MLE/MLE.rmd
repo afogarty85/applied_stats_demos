@@ -31,19 +31,19 @@ X <- data.frame(intercept, x1, x2)
 X <- data.matrix(X)
 ```
 
-When calculating the MLE, most programs iterate some numerical optimization procedure. These algorithms continuously recalculate until the change in the current value falls below a specified tolerance -- when the algorithm is then said to have converged. The workhorse for finding extrema of log-likelihood functions are hill-climbing algorithms that use the information in the derivative of the log-likelihood function to climb to a maximum or descend to a minimum. There are many algorithms for computing the MLE, such as Newton-Raphson (`NR`), Quasi-Newton (`BFGS`), and Gradient Descent.
+When calculating the MLE, most programs iterate some numerical optimization procedure. These algorithms continuously recalculate the parameters until the change in the current value falls below a specified tolerance -- when the algorithm is then said to have converged. The workhorse for finding extrema of log-likelihood functions are hill-climbing algorithms that use the information in the derivative of the log-likelihood function to climb to a maximum or descend to a minimum. There are many algorithms for computing the MLE, such as Newton-Raphson (`NR`), Quasi-Newton (`BFGS`), and Gradient Descent.
 
 We can get coefficients by either:
 
-1. Maximizing the log-likelihood, or
-2. Minimizing the negative log-likelihood
+1. **Maximizing** the log-likelihood, or
+2. **Minimizing** the negative log-likelihood
 
 
 # Gradient Descent
 
-In this section, we minimize the negative log-likelihood to arrive at our parameters that most likely generated our data using gradient descent. Gradient descent is optimal because it avoids computing the hessian (the second derivative) which can be computationally expensive or difficult given certain functions. Instead, it uses the gradient to choose the direction for the next update. Gradient descent is very popular for machine learning methods, particularly for high dimensional computation as it avoids computing the hessian. 
+In this section, we **minimize** the negative log-likelihood to arrive at our parameters that most likely generated our data using gradient descent. Gradient descent is optimal because it avoids computing the hessian (the second derivative) which can be computationally expensive or difficult given certain functions. Instead, it uses the gradient to choose the direction for the next update. Gradient descent is very popular for machine learning methods, particularly for high dimensional computation *because* it avoids computing the hessian. 
 
-To find our coefficients, we need to compute two quantities of interest: (1) the negative log-likelihood, and (2) its first derivative, the gradient. For large `N` problems the computation may become prohibitive. Gradient descent, often called "standard" or "batch" gradient descent uses all data points for computing the next search direction. In the next section, we show how we can circumvent this by using Stochastic Gradient Descent.
+To find our coefficients, we need to compute two quantities of interest: (1) the negative log-likelihood, and (2) its first derivative, the gradient. Gradient descent, often called "standard" or "batch" gradient descent uses all data points for computing the next search direction. In the next section, we show how we can circumvent this by using Stochastic Gradient Descent.
 
 ## Quantity of Interest: Negative Log-Likelihood
 
@@ -71,7 +71,7 @@ gradient <- function(b,X,y){
 
 ## Gradient Descent Optimization: In Steps
 
-Next, we step through the optimization algorithm through a few steps manually so we can better understand how our coefficients get updated as we minimize our negative log-likelihood.
+Next, we step through the optimization algorithm manually so we can better understand how our coefficients get updated as we minimize our negative log-likelihood.
 
 First, we instantiate some initial values for our coefficients and a learning rate.
 
@@ -80,7 +80,17 @@ beta = c(0,0,0)  # for intercept and two betas
 learning_rate = 0.0001  # learning rate
 ```
 
-Next, we step through the process iteratively before proceeding to a while loop. In the code below, we: (1) save the current beta coefficients separately as the old, (2) multiply our learning rate by the first derivative, obtaining the values at which we nudge our coefficients, either positively or negatively, (3) update our current beta by subtracting the error, (4) use the new betas to update our negative log-likelihood, and finally (5) calculate the euclidean distance between our beta estimates which we will use to stop iterating once we reach a specified tolerance.
+Next, we step through the process iteratively before proceeding to a while loop. In the code below, we:
+
+1. Save the current beta coefficients separately as the old,
+
+2. Multiply our learning rate by the first derivative, obtaining the values at which we nudge our coefficients, either positively or negatively,
+
+3. Update our current beta by subtracting the error,
+
+4. Use the new betas to update our negative log-likelihood, and
+
+5. Calculate the euclidean distance between our beta estimates which we will use to stop iterating once we reach a specified tolerance.
 
 ```{r}
 # save the previous value
@@ -102,7 +112,7 @@ eps  = sqrt(sum((beta - beta0)^2))
 
 ## Gradient Descent Optimization: Automated
 
-In this section, we utilize a while loop to execute our numerical optimization using gradient descent. This while loop will continue until the euclidean distance between our $\beta$s stop updating past our specified tolerance.
+In this section, we utilize a while loop to execute our numerical optimization using gradient descent. This loop will continue until the euclidean distance between our $\beta$s stop updating past our specified tolerance.
 
 
 ```{r}
@@ -139,7 +149,11 @@ while(eps > tol & iter < maxit){
 }
 ```
 
-As we can see, we have: (1) minimized our negative log-likelihood, and (2) found our estimates of beta iteratively until we reached our specified tolerance (0.000001).
+As we can see, we have: 
+
+1. Minimized our negative log-likelihood, and 
+
+2. Found our estimates of beta iteratively until we reached our specified tolerance (0.000001).
 
 To compare our results with that of R's `glm` function, consider the following:
 
@@ -153,7 +167,7 @@ As we can see, we get identical results.
 
 # Stochastic Gradient Descent
 
-Stochastic gradient descent randomly sub-samples the data and performs an update for $\beta$ with a random observation drawn from the data, rather than a full pass over the data. The same procedure continues as above, except we sample our data and iterate until convergence. While in this example stochastic gradient descent will perform slower than standard gradient descent, in situations where we have more data and higher dimensional features, stochastic gradient descent will outperform gradient descent significantly.
+Stochastic gradient descent randomly sub-samples the data and performs an update for $\beta$ with a random observation drawn from the data, rather than a full pass over the data. The same procedure continues as above, except we sample our data and iterate until convergence. While in this example stochastic gradient descent will perform slower than standard gradient descent, in situations where we have more data and higher dimensional features, stochastic gradient descent will outperform gradient descent significantly by reducing computation time.
 
 # Stochastic Gradient Descent Optimization: Automated
 
@@ -202,6 +216,13 @@ while(eps > tol & iter < maxit & epscount < 4){
   if(floor(iter/200) == ceiling(iter/200)) cat(sprintf("Iter: %d logL: %.2f beta0: %.3f beta1: %.3f beta2: %.3f eps:%f\n",iter, logL[iter-1],beta[1],beta[2],beta[3],eps))
 }
 ```
+
+To compare with the `GLM` function's output again:
+
+```{r}
+round(fit.glm$coefficients, 3)
+```
+
 As we can see, we arrive at similar results, albeit in a slower and more circuitous manner given the "stochastic" nature of our sampling process.
 
 
@@ -209,10 +230,11 @@ As we can see, we arrive at similar results, albeit in a slower and more circuit
 
 # Quasi Newton: BFGS
 
-To show how we can maximize our log-likelihood and arrive at similar results by using R's optim package, we make some slight changes to the code below:
+To show how we can maximize our log-likelihood and arrive at similar results by using R's `optim` package, we make some slight changes to the code below:
 
-1. We remove the negative sign from likelihood function and its gradient.
-2. We specify `fnscale=-1` inside `optim` to tell the algorithm to maximize rather than minimize.
+1. We remove the negative sign from likelihood function and its gradient, and
+
+2. We specify `fnscale=-1` inside `optim` to tell the algorithm to **maximize** rather than **minimize**.
 
 
 ```{r}
@@ -243,7 +265,14 @@ list(coefficients=results$par,var=solve(results$hessian),
 round(results$par, 3)
 ```
 
-As we can see, we find can find identical results either through maximization or minimization. Further, we can see that BFGS outperforms gradient descent.
+
+To compare with the `GLM` function's output again:
+
+```{r}
+round(fit.glm$coefficients, 3)
+```
+
+As we can see, we find can find identical results either through maximization or minimization. Further, we can see that BFGS outperforms gradient descent here in terms of speed.
 
 
 
@@ -251,6 +280,8 @@ As we can see, we find can find identical results either through maximization or
 
 
 # Sources
+
+* Ward, Michael D., and John S. Ahlquist. Maximum Likelihood for Social Science: Strategies for Analysis. Cambridge University Press, 2018.
 
 * Giudici, Paolo, Geof H. Givens, and Bani K. Mallick. Wiley Series in Computational Statistics. Wiley Online Library, 2013.
 
